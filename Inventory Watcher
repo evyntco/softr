@@ -1,0 +1,755 @@
+import React, { useMemo, useState } from "react";
+
+import {
+  useRecords,
+  useRecordUpdate,
+  useRecordCreate,
+  useRecordDelete,
+  useFieldOptions,
+  q,
+} from "@/lib/datasource";
+
+import {
+  useTextSetting,
+} from "@/lib/editable-settings";
+
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+  DialogFooter,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { toast } from "sonner";
+import { Pencil, Plus, Check, X, Trash2 } from "lucide-react";
+
+
+/* =========================================================
+   MENU INGREDIENTS DATABASE
+========================================================= */
+
+const ingredientSelect = q.select({
+  name: "Item Name",
+  countInInventory: "Count In Inventory",
+  unitsInInventory: "Unit of Count in Inventory",
+  category: "Category",
+});
+
+const updateFields = q.select({
+  name: "Item Name",
+  countInInventory: "Count In Inventory",
+  unitsInInventory: "Unit of Count in Inventory",
+  category: "Category",
+});
+
+const createFields = q.select({
+  name: "Item Name",
+  countInInventory: "Count In Inventory",
+  unitsInInventory: "Unit of Count in Inventory",
+  category: "Category",
+});
+
+
+/* =========================================================
+   HELPERS
+========================================================= */
+
+function displayValue(value, fallback = "—") {
+  if (value === null || value === undefined || value === "") return fallback;
+  if (Array.isArray(value)) {
+    const values = value
+      .map((item) => {
+        if (typeof item === "string" || typeof item === "number") return String(item);
+        if (item?.name) return item.name;
+        if (item?.title) return item.title;
+        if (item?.label) return item.label;
+        return "";
+      })
+      .filter(Boolean);
+    return values.length ? values.join(", ") : fallback;
+  }
+  if (typeof value === "object") {
+    if (value?.name) return value.name;
+    if (value?.title) return value.title;
+    if (value?.label) return value.label;
+  }
+  const text = String(value).trim();
+  return text || fallback;
+}
+
+function numericValue(value) {
+  if (value === null || value === undefined || value === "") return 0;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function formatNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return displayValue(value);
+  return number.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+
+/* =========================================================
+   MAIN BLOCK
+========================================================= */
+
+export default function Block() {
+
+  const pageTitle = useTextSetting({
+    name: "inventory-title",
+    label: "Page Title",
+    initialValue: "Menu Ingredient Inventory",
+  });
+
+  const pageDescription = useTextSetting({
+    name: "inventory-description",
+    label: "Page Description",
+    initialValue: "Current inventory counts for menu ingredients.",
+  });
+
+
+  /* -------------------------------------------------------
+     LOCAL FILTERS
+  ------------------------------------------------------- */
+
+  const [search, setSearch] = useState("");
+  const [stockFilter, setStockFilter] = useState("all");
+
+
+  /* -------------------------------------------------------
+     INLINE EDITING STATE
+  ------------------------------------------------------- */
+
+  const [editingId, setEditingId] = useState(null);
+  const [editValues, setEditValues] = useState({ name: "", count: "", units: "", category: "" });
+
+
+  /* -------------------------------------------------------
+     ADD INGREDIENT DIALOG STATE
+  ------------------------------------------------------- */
+
+  const [addOpen, setAddOpen] = useState(false);
+  const [newIngredient, setNewIngredient] = useState({ name: "", count: "", units: "", category: "" });
+
+
+  /* -------------------------------------------------------
+     DELETE CONFIRMATION STATE
+  ------------------------------------------------------- */
+
+  const [deleteTarget, setDeleteTarget] = useState(null);
+
+
+  /* -------------------------------------------------------
+     LOAD MENU INGREDIENTS
+  ------------------------------------------------------- */
+
+  const {
+    data,
+    status,
+    error,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+    refetch,
+  } = useRecords({
+    select: ingredientSelect,
+    count: 100,
+  });
+
+  const { options: categoryOptions } = useFieldOptions({
+    select: ingredientSelect,
+    field: "category",
+  });
+
+
+  /* -------------------------------------------------------
+     UPDATE RECORD
+  ------------------------------------------------------- */
+
+  const updateRecord = useRecordUpdate({
+    fields: updateFields,
+    async onSuccess(updatedRecord) {
+      await refetch();
+      toast.success(`Updated ${updatedRecord.fields.name || "ingredient"} successfully!`);
+      setEditingId(null);
+    },
+    onError(error, variables) {
+      toast.error(`Failed to update ingredient`, { description: error.message });
+    },
+  });
+
+
+  /* -------------------------------------------------------
+     CREATE RECORD
+  ------------------------------------------------------- */
+
+  const createRecord = useRecordCreate({
+    fields: createFields,
+    onSuccess(newRecord) {
+      toast.success(`Added ${newRecord.fields.name || "ingredient"} successfully!`);
+      setAddOpen(false);
+      setNewIngredient({ name: "", count: "", units: "", category: "" });
+    },
+    onError(error) {
+      toast.error(`Error adding ingredient: ${error.message}`);
+    },
+  });
+
+
+  /* -------------------------------------------------------
+     DELETE RECORD
+  ------------------------------------------------------- */
+
+  const deleteRecord = useRecordDelete({
+    async onSuccess({ recordId }) {
+      const deletedItem = records.find((item) => item.id === recordId);
+      await refetch();
+      toast.success(`Deleted ${deletedItem?.fields?.name || "ingredient"} successfully!`);
+      setDeleteTarget(null);
+    },
+    onError(error) {
+      toast.error(`Failed to delete ingredient`, { description: error.message });
+    },
+  });
+
+
+  /* -------------------------------------------------------
+     NORMALIZE RECORD RESULTS
+  ------------------------------------------------------- */
+
+  const records = useMemo(() => {
+    if (!data) return [];
+    if (Array.isArray(data?.pages)) return data.pages.flatMap((page) => page?.items ?? []);
+    if (Array.isArray(data?.items)) return data.items;
+    if (Array.isArray(data)) return data;
+    return [];
+  }, [data]);
+
+
+  /* -------------------------------------------------------
+     SORT + SEARCH + STOCK FILTER
+  ------------------------------------------------------- */
+
+  const filteredRecords = useMemo(() => {
+    const normalizedSearch = search.trim().toLowerCase();
+    return [...records]
+      .filter((record) => {
+        const fields = record?.fields ?? {};
+        const name = displayValue(fields.name, "").toLowerCase();
+        const count = numericValue(fields.countInInventory);
+        const matchesSearch = !normalizedSearch || name.includes(normalizedSearch);
+        if (!matchesSearch) return false;
+        if (stockFilter === "in-stock" && count <= 0) return false;
+        if (stockFilter === "out-of-stock" && count > 0) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        const aName = displayValue(a?.fields?.name, "");
+        const bName = displayValue(b?.fields?.name, "");
+        return aName.localeCompare(bName);
+      });
+  }, [records, search, stockFilter]);
+
+
+  /* -------------------------------------------------------
+     SUMMARY COUNTS
+  ------------------------------------------------------- */
+
+  const inventorySummary = useMemo(() => {
+    let inStock = 0;
+    let outOfStock = 0;
+    records.forEach((record) => {
+      const count = numericValue(record?.fields?.countInInventory);
+      if (count > 0) inStock += 1;
+      else outOfStock += 1;
+    });
+    return { total: records.length, inStock, outOfStock };
+  }, [records]);
+
+
+  /* -------------------------------------------------------
+     EDIT HANDLERS
+  ------------------------------------------------------- */
+
+  const startEditing = (record) => {
+    const fields = record?.fields ?? {};
+    setEditingId(record.id);
+    setEditValues({
+      name: displayValue(fields.name, ""),
+      count: String(numericValue(fields.countInInventory)),
+      units: displayValue(fields.unitsInInventory, ""),
+      category: fields.category?.id || "",
+    });
+  };
+
+  const cancelEditing = () => {
+    setEditingId(null);
+    setEditValues({ name: "", count: "", units: "", category: "" });
+  };
+
+  const saveEditing = (recordId) => {
+    updateRecord.mutate({
+      recordId,
+      fields: {
+        name: editValues.name.trim() || "Unnamed Ingredient",
+        countInInventory: Number(editValues.count) || 0,
+        unitsInInventory: editValues.units.trim(),
+        category: editValues.category ? { id: editValues.category } : null,
+      },
+    });
+  };
+
+  const handleAddIngredient = () => {
+    createRecord.mutate({
+      name: newIngredient.name,
+      countInInventory: Number(newIngredient.count) || 0,
+      unitsInInventory: newIngredient.units,
+      category: newIngredient.category ? { id: newIngredient.category } : null,
+    });
+  };
+
+  const handleDelete = () => {
+    if (deleteTarget) {
+      deleteRecord.mutate(deleteTarget.id);
+    }
+  };
+
+
+  /* -------------------------------------------------------
+     LOADING
+  ------------------------------------------------------- */
+
+  if (status === "loading" || status === "pending") {
+    return (
+      <div className="container py-8">
+        <div className="max-w-6xl mx-auto">
+          <section className="rounded-xl border bg-card p-10 text-center shadow-sm">
+            <div className="text-lg font-semibold">Loading inventory...</div>
+            <p className="text-sm text-muted-foreground mt-2">Reading Menu Ingredients</p>
+          </section>
+        </div>
+      </div>
+    );
+  }
+
+
+  /* -------------------------------------------------------
+     ERROR
+  ------------------------------------------------------- */
+
+  if (status === "error") {
+    return (
+      <div className="container py-8">
+        <div className="max-w-6xl mx-auto">
+          <section className="rounded-xl border bg-card p-8 shadow-sm">
+            <h2 className="text-xl font-semibold">Unable to load inventory</h2>
+            <p className="text-sm text-muted-foreground mt-2">
+              Make sure this block's Content Data Source is connected to the Menu Ingredients database.
+            </p>
+            {error && (
+              <p className="mt-3 text-xs text-destructive">
+                {String(error?.message || error)}
+              </p>
+            )}
+            <button
+              type="button"
+              onClick={() => refetch?.()}
+              className="mt-5 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90"
+            >
+              Try Again
+            </button>
+          </section>
+        </div>
+      </div>
+    );
+  }
+
+
+  /* =======================================================
+     PAGE
+  ======================================================= */
+
+  return (
+    <div className="container py-8">
+      <div className="content max-w-6xl mx-auto">
+
+        {/* HEADER */}
+        <div className="mb-8">
+          <span className="inline-flex rounded-full bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground">
+            Inventory
+          </span>
+          <h1 className="font-heading text-4xl mt-3">{pageTitle}</h1>
+          <p className="text-muted-foreground text-lg mt-2">{pageDescription}</p>
+        </div>
+
+        {/* SUMMARY CARDS */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+          <SummaryCard label="Ingredients" value={inventorySummary.total} />
+          <SummaryCard label="In Stock" value={inventorySummary.inStock} />
+          <SummaryCard label="Zero Inventory" value={inventorySummary.outOfStock} />
+        </div>
+
+        {/* SEARCH / FILTER */}
+        <section className="rounded-xl border bg-card shadow-sm mb-6">
+          <div className="p-5">
+            <div className="flex flex-col md:flex-row md:items-center gap-3">
+              <div className="flex-1">
+                <input
+                  type="text"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="Search ingredients..."
+                  className="w-full rounded-md border bg-background px-4 py-2.5 text-sm"
+                />
+              </div>
+              <div className="flex gap-2 flex-wrap">
+                <FilterButton active={stockFilter === "all"} onClick={() => setStockFilter("all")}>
+                  All
+                </FilterButton>
+                <FilterButton active={stockFilter === "in-stock"} onClick={() => setStockFilter("in-stock")}>
+                  In Stock
+                </FilterButton>
+                <FilterButton active={stockFilter === "out-of-stock"} onClick={() => setStockFilter("out-of-stock")}>
+                  Zero Inventory
+                </FilterButton>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* INVENTORY TABLE */}
+        <section className="rounded-xl border bg-card shadow-sm overflow-hidden">
+          <div className="p-5 border-b flex justify-between gap-4 items-center flex-wrap">
+            <div>
+              <h2 className="text-lg font-semibold">Menu Ingredients</h2>
+              <p className="text-sm text-muted-foreground mt-1">
+                {filteredRecords.length} ingredient{filteredRecords.length === 1 ? "" : "s"} shown
+              </p>
+            </div>
+            <div className="flex gap-2">
+              {createRecord.enabled && (
+                <Dialog open={addOpen} onOpenChange={setAddOpen}>
+                  <DialogTrigger asChild>
+                    <Button size="sm">
+                      <Plus className="h-4 w-4 mr-1" />
+                      Add Ingredient
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Add New Ingredient</DialogTitle>
+                    </DialogHeader>
+                    <form onSubmit={(e) => { e.preventDefault(); handleAddIngredient(); }} className="space-y-4 py-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="new-name">Ingredient Name</Label>
+                        <Input
+                          id="new-name"
+                          value={newIngredient.name}
+                          onChange={(e) => setNewIngredient({ ...newIngredient, name: e.target.value })}
+                          placeholder="e.g. Flour"
+                          required
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="new-count">Count in Inventory</Label>
+                        <Input
+                          id="new-count"
+                          type="number"
+                          value={newIngredient.count}
+                          onChange={(e) => setNewIngredient({ ...newIngredient, count: e.target.value })}
+                          placeholder="0"
+                          required
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="new-category">Category</Label>
+                        <select
+                          id="new-category"
+                          value={newIngredient.category}
+                          onChange={(e) => setNewIngredient({ ...newIngredient, category: e.target.value })}
+                          className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                        >
+                          <option value="">Select category...</option>
+                          {categoryOptions.map((opt) => (
+                            <option key={opt.id} value={opt.id}>{opt.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="new-units">Units in Inventory</Label>
+                        <Input
+                          id="new-units"
+                          value={newIngredient.units}
+                          onChange={(e) => setNewIngredient({ ...newIngredient, units: e.target.value })}
+                          placeholder="e.g. kg, liters, pieces"
+                          required
+                        />
+                      </div>
+                      <DialogFooter>
+                        <Button type="submit" disabled={createRecord.status === "pending"}>
+                          {createRecord.status === "pending" ? "Adding..." : "Add Ingredient"}
+                        </Button>
+                      </DialogFooter>
+                    </form>
+                  </DialogContent>
+                </Dialog>
+              )}
+              <button
+                type="button"
+                onClick={() => refetch?.()}
+                className="rounded-md border bg-background px-3 py-2 text-xs font-semibold hover:bg-muted"
+              >
+                Refresh
+              </button>
+            </div>
+          </div>
+
+          {filteredRecords.length === 0 ? (
+            <div className="p-10 text-center">
+              <h3 className="font-semibold">No ingredients found</h3>
+              <p className="text-sm text-muted-foreground mt-2">
+                Try changing your search or inventory filter.
+              </p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[700px]">
+                <thead className="bg-muted/50 border-b">
+                  <tr>
+                    <TableHead>Ingredient</TableHead>
+                    <TableHead className="w-[140px]">Category</TableHead>
+                    <TableHead className="w-[140px]">Count in Inventory</TableHead>
+                    <TableHead className="w-[140px]">Units in Inventory</TableHead>
+                    <TableHead className="w-[130px]">Actions</TableHead>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredRecords.map((record, index) => {
+                    const fields = record?.fields ?? {};
+                    const isEditing = editingId === record.id;
+                    const outOfStock = numericValue(fields.countInInventory) <= 0;
+
+                    if (isEditing) {
+                      return (
+                        <tr key={record?.id || `${index}`} className="border-b last:border-b-0 bg-muted/30">
+                          <TableCell>
+                            <Input
+                              value={editValues.name}
+                              onChange={(e) => setEditValues({ ...editValues, name: e.target.value })}
+                              placeholder="Ingredient name"
+                              className="max-w-[200px]"
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <select
+                              value={editValues.category}
+                              onChange={(e) => setEditValues({ ...editValues, category: e.target.value })}
+                              className="w-full max-w-[140px] rounded-md border bg-background px-3 py-2 text-sm"
+                            >
+                              <option value="">Select category...</option>
+                              {categoryOptions.map((opt) => (
+                                <option key={opt.id} value={opt.id}>{opt.label}</option>
+                              ))}
+                            </select>
+                          </TableCell>
+                          <TableCell>
+                            <Input
+                              type="number"
+                              value={editValues.count}
+                              onChange={(e) => setEditValues({ ...editValues, count: e.target.value })}
+                              placeholder="0"
+                              className="max-w-[100px]"
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Input
+                              value={editValues.units}
+                              onChange={(e) => setEditValues({ ...editValues, units: e.target.value })}
+                              placeholder="e.g. kg"
+                              className="max-w-[100px]"
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex gap-1">
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="h-8 w-8 text-primary"
+                                onClick={() => saveEditing(record.id)}
+                                disabled={updateRecord.status === "pending"}
+                              >
+                                <Check className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="h-8 w-8 text-muted-foreground"
+                                onClick={cancelEditing}
+                              >
+                                <X className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </tr>
+                      );
+                    }
+
+                    const name = displayValue(fields.name, "Unnamed Ingredient");
+                    const categoryLabel = fields.category?.label || "—";
+                    const count = numericValue(fields.countInInventory);
+                    const countDisplay = displayValue(fields.countInInventory);
+                    const unitsDisplay = displayValue(fields.unitsInInventory);
+
+                    return (
+                      <tr key={record?.id || `${name}-${index}`} className="border-b last:border-b-0 hover:bg-muted/20">
+                        <TableCell>
+                          <div className="flex items-center gap-3">
+                            <div className={`h-2.5 w-2.5 rounded-full ${outOfStock ? "bg-destructive" : "bg-primary"}`} />
+                            <div>
+                              <div className="font-semibold">{name}</div>
+                              <div className="text-xs text-muted-foreground mt-0.5">
+                                {outOfStock ? "No inventory recorded" : "Inventory available"}
+                              </div>
+                            </div>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <span className="inline-flex rounded-full bg-muted px-2.5 py-1 text-xs font-medium">{categoryLabel}</span>
+                        </TableCell>
+                        <TableCell>
+                          <div className={`inline-flex min-w-[70px] justify-center rounded-lg border px-3 py-2 font-semibold ${outOfStock ? "border-destructive/30 bg-destructive/5 text-destructive" : "bg-muted/40"}`}>
+                            {formatNumber(countDisplay)}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <span className="font-medium">{unitsDisplay}</span>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex gap-1">
+                            {updateRecord.enabled && (
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                                onClick={() => startEditing(record)}
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                            )}
+                            {deleteRecord.enabled && (
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                                onClick={() => setDeleteTarget(record)}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            )}
+                          </div>
+                        </TableCell>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {hasNextPage && (
+            <div className="border-t p-4 text-center">
+              <button
+                type="button"
+                disabled={isFetchingNextPage}
+                onClick={() => fetchNextPage?.()}
+                className="rounded-md border bg-background px-5 py-2.5 text-sm font-semibold hover:bg-muted disabled:opacity-50"
+              >
+                {isFetchingNextPage ? "Loading..." : "Load More Ingredients"}
+              </button>
+            </div>
+          )}
+        </section>
+
+        <p className="text-xs text-muted-foreground mt-4">
+          Inventory values are displayed directly from the connected Menu Ingredients database.
+        </p>
+      </div>
+
+      {/* DELETE CONFIRMATION DIALOG */}
+      <Dialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Ingredient</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete <strong>{deleteTarget?.fields?.name || "this ingredient"}</strong>? This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDelete}
+              disabled={deleteRecord.status === "pending"}
+            >
+              {deleteRecord.status === "pending" ? "Deleting..." : "Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+
+/* =========================================================
+   COMPONENTS
+========================================================= */
+
+function SummaryCard({ label, value }) {
+  return (
+    <div className="rounded-xl border bg-card p-5 shadow-sm">
+      <div className="text-xs font-medium text-muted-foreground">{label}</div>
+      <div className="text-3xl font-bold mt-1">{Number(value || 0).toLocaleString()}</div>
+    </div>
+  );
+}
+
+function FilterButton({ children, active, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={
+        active
+          ? "rounded-md bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground"
+          : "rounded-md border bg-background px-3 py-2 text-xs font-semibold hover:bg-muted"
+      }
+    >
+      {children}
+    </button>
+  );
+}
+
+function TableHead({ children, className = "" }) {
+  return (
+    <th className={`px-5 py-3 text-left text-xs font-semibold text-muted-foreground ${className}`}>
+      {children}
+    </th>
+  );
+}
+
+function TableCell({ children }) {
+  return (
+    <td className="px-5 py-4 align-middle text-sm">
+      {children}
+    </td>
+  );
+}
