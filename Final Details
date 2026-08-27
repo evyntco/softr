@@ -1,0 +1,1696 @@
+import { useEffect, useMemo, useState } from "react";
+import { useRecords, q } from "@/lib/datasource";
+import { useNavigationSetting } from "@/lib/editable-settings";
+import { NavigationAction } from "@/components/navigation-action";
+
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+
+import {
+  Search,
+  MapPin,
+  ChevronRight,
+  ChevronLeft,
+  RefreshCw,
+  CalendarDays,
+  Clock,
+  List,
+  Grid3X3,
+  AlertCircle,
+  AlertTriangle,
+} from "lucide-react";
+
+/* =========================================================
+   EVENT DATASOURCE
+
+   Every record with Event Date will appear.
+   Past + present + future.
+========================================================= */
+
+const eventSelect = q.select({
+  projectName: "Project Name",
+  eventDate: "Event Date",
+  finalDetailsConfirmed: "Final Details Confirmed?",
+});
+
+/* =========================================================
+   VALUE HELPERS
+========================================================= */
+
+function valueToText(value) {
+  if (value === null || value === undefined) return "";
+
+  if (typeof value === "string") return value;
+  if (typeof value === "number") return String(value);
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => valueToText(item))
+      .filter(Boolean)
+      .join(", ");
+  }
+
+  if (typeof value === "object") {
+    if (value.label) return valueToText(value.label);
+    if (value.name) return valueToText(value.name);
+    if (value.title) return valueToText(value.title);
+    if (value.start) return value.start;
+
+    if (value.value !== undefined) {
+      return valueToText(value.value);
+    }
+
+    if (value.url) return value.url;
+  }
+
+  return "";
+}
+
+/* =========================================================
+   DATE HELPERS
+========================================================= */
+
+function getRawDate(value) {
+  if (!value) return "";
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (typeof value === "object") {
+    if (value.start) return value.start;
+    if (value.date?.start) return value.date.start;
+    if (value.value?.start) return value.value.start;
+
+    if (typeof value.value === "string") {
+      return value.value;
+    }
+  }
+
+  return "";
+}
+
+function getDateKey(value) {
+  const raw = getRawDate(value);
+
+  if (!raw) return "";
+
+  const match = String(raw).match(
+    /^(\d{4})-(\d{2})-(\d{2})/
+  );
+
+  if (!match) return "";
+
+  return `${match[1]}-${match[2]}-${match[3]}`;
+}
+
+function dateKeyFromParts(year, month, day) {
+  return [
+    String(year).padStart(4, "0"),
+    String(month + 1).padStart(2, "0"),
+    String(day).padStart(2, "0"),
+  ].join("-");
+}
+
+function todayKey() {
+  const today = new Date();
+
+  return dateKeyFromParts(
+    today.getFullYear(),
+    today.getMonth(),
+    today.getDate()
+  );
+}
+
+function dateFromKey(key) {
+  if (!key) return null;
+
+  const [year, month, day] = key
+    .split("-")
+    .map(Number);
+
+  if (!year || !month || !day) return null;
+
+  return new Date(
+    year,
+    month - 1,
+    day
+  );
+}
+
+function formatLongDate(key) {
+  const date = dateFromKey(key);
+
+  if (!date) return "";
+
+  return date.toLocaleDateString(undefined, {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function formatEventTime(value) {
+  const raw = getRawDate(value);
+
+  if (!raw || !String(raw).includes("T")) {
+    return "";
+  }
+
+  const parsed = new Date(raw);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return "";
+  }
+
+  return parsed.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+/* =========================================================
+   FINAL DETAILS HELPERS
+
+   Final Details Confirmed? values:
+   - blank
+   - No
+   - Yes
+   - Yes but with change request
+
+   Rules:
+   - Clean "Yes" = cleared
+   - "No" = needs attention
+   - "Yes but with change request" = needs attention
+   - Blank = only urgent when event is within next 30 days
+========================================================= */
+
+function getFinalDetailsStatus(value) {
+  const raw = valueToText(value).trim();
+  const normalized = raw.toLowerCase();
+
+  return {
+    raw,
+    isBlank: normalized === "",
+    isYes: normalized === "yes",
+    isNo: normalized === "no",
+    hasChangeRequest:
+      normalized === "yes but with change request",
+  };
+}
+
+function daysBetweenDateKeys(fromKey, toKey) {
+  const from = dateFromKey(fromKey);
+  const to = dateFromKey(toKey);
+
+  if (!from || !to) return null;
+
+  const fromUtc = Date.UTC(
+    from.getFullYear(),
+    from.getMonth(),
+    from.getDate()
+  );
+
+  const toUtc = Date.UTC(
+    to.getFullYear(),
+    to.getMonth(),
+    to.getDate()
+  );
+
+  return Math.round(
+    (toUtc - fromUtc) / 86400000
+  );
+}
+
+function getFinalDetailsFlags(record) {
+  const fields = record?.fields || {};
+
+  const eventDateKey =
+    getDateKey(fields.eventDate);
+
+  const status =
+    getFinalDetailsStatus(
+      fields.finalDetailsConfirmed
+    );
+
+  const daysAway =
+    daysBetweenDateKeys(
+      todayKey(),
+      eventDateKey
+    );
+
+  const withinNext30Days =
+    daysAway !== null &&
+    daysAway >= 0 &&
+    daysAway <= 30;
+
+  /*
+   * Explicit attention states stay flagged regardless
+   * of how far away the event is.
+   */
+  const needsAttention =
+    status.isNo ||
+    status.hasChangeRequest;
+
+  /*
+   * Any event in the next 30 days that is not a clean Yes
+   * gets a due-soon warning.
+   */
+  const dueSoon =
+    withinNext30Days &&
+    !status.isYes;
+
+  return {
+    ...status,
+    daysAway,
+    withinNext30Days,
+    needsAttention,
+    dueSoon,
+
+    /*
+     * Used for simple highlighting anywhere in the UI.
+     */
+    flagged:
+      needsAttention ||
+      dueSoon,
+  };
+}
+
+function FinalDetailsBadge({ record }) {
+  const flags =
+    getFinalDetailsFlags(record);
+
+  if (flags.hasChangeRequest) {
+    return (
+      <Badge
+        variant="outline"
+        className="border-amber-300 bg-amber-50 text-amber-800"
+      >
+        <AlertTriangle className="mr-1 h-3 w-3" />
+        Change request
+      </Badge>
+    );
+  }
+
+  if (flags.isNo) {
+    return (
+      <Badge
+        variant="outline"
+        className="border-red-200 bg-red-50 text-red-700"
+      >
+        <AlertTriangle className="mr-1 h-3 w-3" />
+        Needs attention
+      </Badge>
+    );
+  }
+
+  if (flags.dueSoon) {
+    return (
+      <Badge
+        variant="outline"
+        className="border-amber-200 bg-amber-50 text-amber-800"
+      >
+        <AlertTriangle className="mr-1 h-3 w-3" />
+        Final details due
+      </Badge>
+    );
+  }
+
+  if (flags.isYes) {
+    return (
+      <Badge
+        variant="outline"
+        className="border-emerald-200 bg-emerald-50 text-emerald-700"
+      >
+        Final details confirmed
+      </Badge>
+    );
+  }
+
+  return null;
+}
+
+/* =========================================================
+   MAIN BLOCK
+========================================================= */
+
+export default function Block() {
+  const now = new Date();
+
+  const [currentMonth, setCurrentMonth] =
+    useState(
+      new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        1
+      )
+    );
+
+  const [selectedDate, setSelectedDate] =
+    useState(todayKey());
+
+  const [view, setView] =
+    useState("calendar");
+
+  const [search, setSearch] =
+    useState("");
+
+  const [showAttentionList, setShowAttentionList] =
+    useState(false);
+
+  const [regionFilter, setRegionFilter] =
+    useState("all");
+
+  const [venueTypeFilter, setVenueTypeFilter] =
+    useState("all");
+
+  /* =======================================================
+     DETAIL PAGE
+  ======================================================= */
+
+  const eventDetailsNavigation =
+    useNavigationSetting({
+      name: "event-details-navigation",
+      label: "Event Details Page",
+
+      initialValue: {
+        action: "OPEN_PAGE",
+        destination: "/event-details",
+        openIn: "SELF",
+      },
+    });
+
+  /* =======================================================
+     LOAD ALL RECORDS
+  ======================================================= */
+
+  const {
+    data,
+    status,
+    error,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+    isFetching,
+    refetch,
+  } = useRecords({
+    select: eventSelect,
+    orderBy: q.asc("eventDate"),
+    count: 100,
+  });
+
+  /*
+    Automatically load every page of records so the
+    calendar contains the entire datasource rather than
+    only the first 100 records.
+  */
+
+  useEffect(() => {
+    if (
+      hasNextPage &&
+      !isFetchingNextPage
+    ) {
+      fetchNextPage();
+    }
+  }, [
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+  ]);
+
+  const records =
+    data?.pages?.flatMap(
+      (page) => page.items || []
+    ) || [];
+
+  /* =======================================================
+     ALL DATED EVENTS
+
+     IMPORTANT:
+     NO past-date filtering here.
+
+     Every database record that contains Event Date
+     remains available.
+  ======================================================= */
+
+  const datedEvents = useMemo(() => {
+    return records
+      .filter((record) => {
+        return Boolean(
+          getDateKey(
+            record.fields?.eventDate
+          )
+        );
+      })
+      .sort((a, b) => {
+        const aDate = getDateKey(
+          a.fields?.eventDate
+        );
+
+        const bDate = getDateKey(
+          b.fields?.eventDate
+        );
+
+        return aDate.localeCompare(bDate);
+      });
+  }, [records]);
+
+  /* =======================================================
+     FINAL DETAILS FLAGS
+
+     - dueSoonEvents:
+       Event is today through 30 days out AND status != Yes
+
+     - needsAttentionEvents:
+       Final Details Confirmed? is No OR
+       Yes but with change request, regardless of date
+  ======================================================= */
+
+  const dueSoonEvents = useMemo(() => {
+    return datedEvents.filter(
+      (record) =>
+        getFinalDetailsFlags(record).dueSoon
+    );
+  }, [datedEvents]);
+
+  const needsAttentionEvents = useMemo(() => {
+    return datedEvents.filter(
+      (record) =>
+        getFinalDetailsFlags(record).needsAttention
+    );
+  }, [datedEvents]);
+
+  const flaggedEventIds = useMemo(() => {
+    return new Set(
+      datedEvents
+        .filter(
+          (record) =>
+            getFinalDetailsFlags(record).flagged
+        )
+        .map((record) => record.id)
+    );
+  }, [datedEvents]);
+
+  /* =======================================================
+     FILTER OPTIONS
+  ======================================================= */
+
+  const regions = useMemo(() => {
+    const values = datedEvents
+      .map((record) =>
+        valueToText(
+          record.fields?.region
+        ).trim()
+      )
+      .filter(Boolean);
+
+    return [...new Set(values)].sort(
+      (a, b) => a.localeCompare(b)
+    );
+  }, [datedEvents]);
+
+  const venueTypes = useMemo(() => {
+    const values = datedEvents
+      .map((record) =>
+        valueToText(
+          record.fields?.venueType
+        ).trim()
+      )
+      .filter(Boolean);
+
+    return [...new Set(values)].sort(
+      (a, b) => a.localeCompare(b)
+    );
+  }, [datedEvents]);
+
+  /* =======================================================
+     SEARCH + FILTER
+  ======================================================= */
+
+  const filteredEvents = useMemo(() => {
+    const searchValue =
+      search.trim().toLowerCase();
+
+    return datedEvents.filter(
+      (record) => {
+        const f = record.fields || {};
+
+        const searchable = [
+          f.projectName,
+          f.venueType,
+          f.region,
+          f.venueAddress,
+          f.finalDetailsConfirmed,
+        ]
+          .map(valueToText)
+          .join(" ")
+          .toLowerCase();
+
+        if (
+          searchValue &&
+          !searchable.includes(searchValue)
+        ) {
+          return false;
+        }
+
+        const region =
+          valueToText(f.region).trim();
+
+        if (
+          regionFilter !== "all" &&
+          region !== regionFilter
+        ) {
+          return false;
+        }
+
+        const venueType =
+          valueToText(f.venueType).trim();
+
+        if (
+          venueTypeFilter !== "all" &&
+          venueType !== venueTypeFilter
+        ) {
+          return false;
+        }
+
+        return true;
+      }
+    );
+  }, [
+    datedEvents,
+    search,
+    regionFilter,
+    venueTypeFilter,
+  ]);
+
+  /* =======================================================
+     GROUP BY DATE
+  ======================================================= */
+
+  const eventsByDate = useMemo(() => {
+    const grouped = {};
+
+    filteredEvents.forEach(
+      (record) => {
+        const key = getDateKey(
+          record.fields?.eventDate
+        );
+
+        if (!key) return;
+
+        if (!grouped[key]) {
+          grouped[key] = [];
+        }
+
+        grouped[key].push(record);
+      }
+    );
+
+    return grouped;
+  }, [filteredEvents]);
+
+  /* =======================================================
+     MONTH EVENTS
+  ======================================================= */
+
+  const monthEvents = useMemo(() => {
+    const year =
+      currentMonth.getFullYear();
+
+    const month =
+      currentMonth.getMonth();
+
+    return filteredEvents.filter(
+      (record) => {
+        const date = dateFromKey(
+          getDateKey(
+            record.fields?.eventDate
+          )
+        );
+
+        if (!date) return false;
+
+        return (
+          date.getFullYear() === year &&
+          date.getMonth() === month
+        );
+      }
+    );
+  }, [
+    filteredEvents,
+    currentMonth,
+  ]);
+
+  /* =======================================================
+     CALENDAR DAYS
+  ======================================================= */
+
+  const calendarDays = useMemo(() => {
+    const year =
+      currentMonth.getFullYear();
+
+    const month =
+      currentMonth.getMonth();
+
+    const firstDay =
+      new Date(year, month, 1);
+
+    const daysInMonth =
+      new Date(
+        year,
+        month + 1,
+        0
+      ).getDate();
+
+    const previousMonthDays =
+      new Date(
+        year,
+        month,
+        0
+      ).getDate();
+
+    const cells = [];
+
+    /*
+      Previous month filler
+    */
+
+    for (
+      let i = firstDay.getDay() - 1;
+      i >= 0;
+      i--
+    ) {
+      const day =
+        previousMonthDays - i;
+
+      const date =
+        new Date(
+          year,
+          month - 1,
+          day
+        );
+
+      cells.push({
+        day: date.getDate(),
+
+        key: dateKeyFromParts(
+          date.getFullYear(),
+          date.getMonth(),
+          date.getDate()
+        ),
+
+        currentMonth: false,
+      });
+    }
+
+    /*
+      Current month
+    */
+
+    for (
+      let day = 1;
+      day <= daysInMonth;
+      day++
+    ) {
+      cells.push({
+        day,
+
+        key: dateKeyFromParts(
+          year,
+          month,
+          day
+        ),
+
+        currentMonth: true,
+      });
+    }
+
+    /*
+      Next month filler
+    */
+
+    let nextDay = 1;
+
+    while (cells.length % 7 !== 0) {
+      const date =
+        new Date(
+          year,
+          month + 1,
+          nextDay
+        );
+
+      cells.push({
+        day: date.getDate(),
+
+        key: dateKeyFromParts(
+          date.getFullYear(),
+          date.getMonth(),
+          date.getDate()
+        ),
+
+        currentMonth: false,
+      });
+
+      nextDay++;
+    }
+
+    return cells;
+  }, [currentMonth]);
+
+  /* =======================================================
+     ALL EVENTS LIST
+  ======================================================= */
+
+  const agendaGroups = useMemo(() => {
+    const grouped = {};
+
+    filteredEvents.forEach(
+      (record) => {
+        const key = getDateKey(
+          record.fields?.eventDate
+        );
+
+        if (!key) return;
+
+        if (!grouped[key]) {
+          grouped[key] = [];
+        }
+
+        grouped[key].push(record);
+      }
+    );
+
+    return Object.keys(grouped)
+      .sort()
+      .map((key) => ({
+        key,
+        events: grouped[key],
+      }));
+  }, [filteredEvents]);
+
+  const selectedEvents =
+    eventsByDate[selectedDate] || [];
+
+  /* =======================================================
+     MONTH NAVIGATION
+
+     Past months ARE allowed.
+  ======================================================= */
+
+  const previousMonth = () => {
+    setCurrentMonth(
+      new Date(
+        currentMonth.getFullYear(),
+        currentMonth.getMonth() - 1,
+        1
+      )
+    );
+  };
+
+  const nextMonth = () => {
+    setCurrentMonth(
+      new Date(
+        currentMonth.getFullYear(),
+        currentMonth.getMonth() + 1,
+        1
+      )
+    );
+  };
+
+  const goToday = () => {
+    const today = new Date();
+
+    setCurrentMonth(
+      new Date(
+        today.getFullYear(),
+        today.getMonth(),
+        1
+      )
+    );
+
+    setSelectedDate(todayKey());
+  };
+
+  const currentMonthTitle =
+    currentMonth.toLocaleDateString(
+      undefined,
+      {
+        month: "long",
+        year: "numeric",
+      }
+    );
+
+  /* =======================================================
+     EVENT CARD
+  ======================================================= */
+
+  function EventCard({ record }) {
+    const f = record.fields || {};
+
+    const name =
+      valueToText(f.projectName) ||
+      "Event";
+
+    const dateKey =
+      getDateKey(f.eventDate);
+
+    const time =
+      formatEventTime(f.eventDate);
+
+    const venueType =
+      valueToText(f.venueType);
+
+    const region =
+      valueToText(f.region);
+
+    const address =
+      valueToText(f.venueAddress);
+
+    const isPast =
+      dateKey < todayKey();
+
+    return (
+      <div className="rounded-2xl border border-[#e4dfd3] bg-white p-5">
+
+        <div className="flex items-start justify-between gap-4">
+
+          <div>
+
+            <div className="mb-2 flex flex-wrap gap-2">
+
+              {isPast && (
+                <Badge
+                  variant="outline"
+                  className="border-[#ddd7ca] bg-[#f5f3ee] text-[#756c60]"
+                >
+                  Past Event
+                </Badge>
+              )}
+
+              {venueType && (
+                <Badge className="bg-[#111111] text-white">
+                  {venueType}
+                </Badge>
+              )}
+
+              {region && (
+                <Badge variant="outline">
+                  {region}
+                </Badge>
+              )}
+
+              <FinalDetailsBadge
+                record={record}
+              />
+
+            </div>
+
+            <h3 className="text-xl font-bold text-[#111]">
+              {name}
+            </h3>
+
+          </div>
+
+          <CalendarDays className="h-5 w-5 text-[#b48a45]" />
+
+        </div>
+
+        <div className="mt-4 space-y-2 text-sm text-[#625a50]">
+
+          <div className="flex items-center gap-2">
+
+            <CalendarDays className="h-4 w-4 text-[#a37b3e]" />
+
+            {formatLongDate(dateKey)}
+
+          </div>
+
+          {time && (
+            <div className="flex items-center gap-2">
+
+              <Clock className="h-4 w-4 text-[#a37b3e]" />
+
+              {time}
+
+            </div>
+          )}
+
+          {address && (
+            <div className="flex items-start gap-2">
+
+              <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-[#a37b3e]" />
+
+              {address}
+
+            </div>
+          )}
+
+        </div>
+
+        <div className="mt-5 border-t border-[#eee9df] pt-4">
+
+          <Button
+            asChild
+            className="w-full bg-[#111111] text-white hover:bg-[#292929]"
+          >
+
+            <NavigationAction
+              navigation={
+                eventDetailsNavigation
+              }
+              recordId={record.id}
+            >
+
+              <span className="flex items-center justify-center">
+
+                View Event
+
+                <ChevronRight className="ml-2 h-4 w-4" />
+
+              </span>
+
+            </NavigationAction>
+
+          </Button>
+
+        </div>
+
+      </div>
+    );
+  }
+
+  /* =======================================================
+     MAIN UI
+  ======================================================= */
+
+  return (
+    <div className="min-h-screen bg-[#f7f5ef] font-sans">
+
+      <div className="container py-8">
+        <div className="content">
+
+          {/* HEADER */}
+
+          <div className="mb-6 rounded-2xl bg-[#111111] p-6 text-white md:p-8">
+
+            <div className="mb-2 text-xs font-bold uppercase tracking-[0.2em] text-[#d9b46f]">
+              Events
+            </div>
+
+            <div className="flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
+
+              <div>
+
+                <h1 className="text-3xl font-bold">
+                  Event Calendar
+                </h1>
+
+                <p className="mt-2 max-w-2xl text-[#e9e3d6]">
+                  Browse past, current, and upcoming
+                  events across the network.
+                </p>
+
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+
+                <div className="rounded-xl bg-white/10 px-4 py-3">
+
+                  <div className="text-xs text-[#d7d0c4]">
+                    Events
+                  </div>
+
+                  <div className="text-xl font-bold">
+                    {filteredEvents.length}
+                  </div>
+
+                </div>
+
+                <div className="rounded-xl bg-amber-400/10 px-4 py-3">
+
+                  <div className="text-xs text-amber-100/70">
+                    Due in 30 Days
+                  </div>
+
+                  <div className="text-xl font-bold text-amber-100">
+                    {dueSoonEvents.length}
+                  </div>
+
+                </div>
+
+                <div className="rounded-xl bg-red-400/10 px-4 py-3">
+
+                  <div className="text-xs text-red-100/70">
+                    Needs Attention
+                  </div>
+
+                  <div className="text-xl font-bold text-red-100">
+                    {needsAttentionEvents.length}
+                  </div>
+
+                </div>
+
+              </div>
+
+            </div>
+
+          </div>
+
+          {/* SEARCH + FILTER */}
+
+          <div className="mb-5 rounded-2xl border border-[#e4dfd3] bg-white p-4">
+
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_190px_190px_auto]">
+
+              <div className="relative">
+
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#877d70]" />
+
+                <Input
+                  value={search}
+                  onChange={(e) =>
+                    setSearch(e.target.value)
+                  }
+                  placeholder="Search events or locations..."
+                  className="h-11 border-[#d8d1c2] bg-[#fffaf2] pl-10"
+                />
+
+              </div>
+
+              <Select
+                value={venueTypeFilter}
+                onValueChange={
+                  setVenueTypeFilter
+                }
+              >
+
+                <SelectTrigger className="h-11 border-[#d8d1c2]">
+
+                  <SelectValue placeholder="Type" />
+
+                </SelectTrigger>
+
+                <SelectContent>
+
+                  <SelectItem value="all">
+                    All Types
+                  </SelectItem>
+
+                  {venueTypes.map(
+                    (type) => (
+                      <SelectItem
+                        key={type}
+                        value={type}
+                      >
+                        {type}
+                      </SelectItem>
+                    )
+                  )}
+
+                </SelectContent>
+
+              </Select>
+
+              <Select
+                value={regionFilter}
+                onValueChange={
+                  setRegionFilter
+                }
+              >
+
+                <SelectTrigger className="h-11 border-[#d8d1c2]">
+
+                  <SelectValue placeholder="Region" />
+
+                </SelectTrigger>
+
+                <SelectContent>
+
+                  <SelectItem value="all">
+                    All Regions
+                  </SelectItem>
+
+                  {regions.map(
+                    (region) => (
+                      <SelectItem
+                        key={region}
+                        value={region}
+                      >
+                        {region}
+                      </SelectItem>
+                    )
+                  )}
+
+                </SelectContent>
+
+              </Select>
+
+              <Button
+                variant="outline"
+                onClick={() => refetch()}
+                disabled={isFetching}
+                className="h-11 border-[#d8d1c2]"
+              >
+
+                <RefreshCw
+                  className={`mr-2 h-4 w-4 ${
+                    isFetching
+                      ? "animate-spin"
+                      : ""
+                  }`}
+                />
+
+                Refresh
+
+              </Button>
+
+            </div>
+
+          </div>
+
+          {/* FINAL DETAILS ATTENTION */}
+
+          {dueSoonEvents.length > 0 && (
+
+            <div className="mb-5 overflow-hidden rounded-2xl border border-amber-200 bg-amber-50">
+
+              <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+
+                <div className="flex items-start gap-3">
+
+                  <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-700" />
+
+                  <div>
+
+                    <div className="font-semibold text-amber-950">
+                      {dueSoonEvents.length} upcoming event
+                      {dueSoonEvents.length === 1 ? "" : "s"} need final-details attention
+                    </div>
+
+                    <div className="mt-1 text-sm text-amber-800">
+                      Events in the next 30 days that are blank, marked No, or have a change request.
+                    </div>
+
+                  </div>
+
+                </div>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() =>
+                    setShowAttentionList(
+                      (current) => !current
+                    )
+                  }
+                  className="shrink-0 border-amber-300 bg-white text-amber-900 hover:bg-amber-100"
+                >
+                  {showAttentionList
+                    ? "Collapse list"
+                    : `Expand list (${dueSoonEvents.length})`}
+                </Button>
+
+              </div>
+
+              {showAttentionList && (
+
+                <div className="border-t border-amber-200 bg-white">
+
+                  <div className="hidden grid-cols-[130px_minmax(220px,1fr)_180px_160px_auto] gap-3 border-b border-[#eee9df] bg-[#fffaf2] px-4 py-2.5 text-[10px] font-bold uppercase tracking-[0.08em] text-[#8b6e40] md:grid">
+                    <span>Date</span>
+                    <span>Event</span>
+                    <span>Final Details</span>
+                    <span>Status</span>
+                    <span />
+                  </div>
+
+                  <div className="divide-y divide-[#eee9df]">
+
+                    {dueSoonEvents.map((record) => {
+
+                      const f =
+                        record.fields || {};
+
+                      const dateKey =
+                        getDateKey(
+                          f.eventDate
+                        );
+
+                      const finalFlags =
+                        getFinalDetailsFlags(
+                          record
+                        );
+
+                      const eventName =
+                        valueToText(
+                          f.projectName
+                        ) || "Event";
+
+                      return (
+
+                        <div
+                          key={record.id}
+                          className="grid gap-3 px-4 py-3.5 md:grid-cols-[130px_minmax(220px,1fr)_180px_160px_auto] md:items-center"
+                        >
+
+                          <div>
+
+                            <div className="text-sm font-semibold text-[#2b241b]">
+                              {formatLongDate(
+                                dateKey
+                              )}
+                            </div>
+
+                            {finalFlags.daysAway !== null && (
+                              <div className="mt-0.5 text-[10px] text-[#9a7a4c]">
+                                {finalFlags.daysAway === 0
+                                  ? "Today"
+                                  : finalFlags.daysAway === 1
+                                  ? "Tomorrow"
+                                  : `${finalFlags.daysAway} days away`}
+                              </div>
+                            )}
+
+                          </div>
+
+                          <div className="min-w-0">
+
+                            <div className="truncate font-semibold text-[#2b241b]">
+                              {eventName}
+                            </div>
+
+                          </div>
+
+                          <div>
+
+                            <FinalDetailsBadge
+                              record={record}
+                            />
+
+                          </div>
+
+                          <div className="text-sm text-[#6f6559]">
+
+                            {finalFlags.hasChangeRequest
+                              ? "Change requested"
+                              : finalFlags.isNo
+                              ? "Needs attention"
+                              : finalFlags.isBlank
+                              ? "Not started"
+                              : "Pending"}
+
+                          </div>
+
+                          <Button
+                            asChild
+                            variant="outline"
+                            size="sm"
+                            className="justify-self-start border-[#d8d1c2] bg-white md:justify-self-end"
+                          >
+
+                            <NavigationAction
+                              navigation={
+                                eventDetailsNavigation
+                              }
+                              recordId={record.id}
+                            >
+
+                              <span className="flex items-center">
+
+                                Open event
+
+                                <ChevronRight className="ml-1 h-4 w-4" />
+
+                              </span>
+
+                            </NavigationAction>
+
+                          </Button>
+
+                        </div>
+                      );
+                    })}
+
+                  </div>
+
+                </div>
+              )}
+
+            </div>
+          )}
+
+          {/* VIEW SWITCH */}
+
+
+          <div className="mb-4 flex gap-2">
+
+            <Button
+              onClick={() =>
+                setView("calendar")
+              }
+              variant={
+                view === "calendar"
+                  ? "default"
+                  : "outline"
+              }
+              className={
+                view === "calendar"
+                  ? "bg-[#111]"
+                  : "bg-white"
+              }
+            >
+
+              <Grid3X3 className="mr-2 h-4 w-4" />
+
+              Calendar
+
+            </Button>
+
+            <Button
+              onClick={() =>
+                setView("list")
+              }
+              variant={
+                view === "list"
+                  ? "default"
+                  : "outline"
+              }
+              className={
+                view === "list"
+                  ? "bg-[#111]"
+                  : "bg-white"
+              }
+            >
+
+              <List className="mr-2 h-4 w-4" />
+
+              All Events
+
+            </Button>
+
+          </div>
+
+          {/* ERROR */}
+
+          {status === "error" && (
+
+            <div className="rounded-2xl border border-red-200 bg-red-50 p-6">
+
+              <AlertCircle className="mb-2 h-6 w-6 text-red-700" />
+
+              {error?.message ||
+                "Unable to load event records."}
+
+            </div>
+          )}
+
+          {/* CALENDAR */}
+
+          {status === "success" &&
+            view === "calendar" && (
+
+              <>
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#e4dfd3] bg-white p-4">
+
+                  <div className="flex gap-2">
+
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      onClick={previousMonth}
+                    >
+                      <ChevronLeft className="h-4 w-4" />
+                    </Button>
+
+                    <Button
+                      variant="outline"
+                      onClick={goToday}
+                    >
+                      Today
+                    </Button>
+
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      onClick={nextMonth}
+                    >
+                      <ChevronRight className="h-4 w-4" />
+                    </Button>
+
+                  </div>
+
+                  <h2 className="text-xl font-bold">
+                    {currentMonthTitle}
+                  </h2>
+
+                  <span className="text-sm text-[#756c60]">
+                    {monthEvents.length} event
+                    {monthEvents.length === 1
+                      ? ""
+                      : "s"}
+                  </span>
+
+                </div>
+
+                <div className="hidden overflow-hidden rounded-2xl border border-[#e4dfd3] bg-white md:block">
+
+                  <div className="grid grid-cols-7 bg-[#f8f6f1]">
+
+                    {[
+                      "Sun",
+                      "Mon",
+                      "Tue",
+                      "Wed",
+                      "Thu",
+                      "Fri",
+                      "Sat",
+                    ].map((day) => (
+
+                      <div
+                        key={day}
+                        className="py-3 text-center text-xs font-bold text-[#756c60]"
+                      >
+                        {day}
+                      </div>
+
+                    ))}
+
+                  </div>
+
+                  <div className="grid grid-cols-7">
+
+                    {calendarDays.map(
+                      (day) => {
+
+                        const events =
+                          eventsByDate[
+                            day.key
+                          ] || [];
+
+                        const isToday =
+                          day.key === todayKey();
+
+                        const selected =
+                          day.key ===
+                          selectedDate;
+
+                        return (
+                          <button
+                            key={day.key}
+                            type="button"
+                            onClick={() =>
+                              setSelectedDate(
+                                day.key
+                              )
+                            }
+                            className={`min-h-[135px] border-r border-t border-[#eee9df] p-2 text-left hover:bg-[#fffaf2] ${
+                              !day.currentMonth
+                                ? "bg-[#faf9f6]"
+                                : "bg-white"
+                            } ${
+                              selected
+                                ? "ring-2 ring-inset ring-[#c49a58]"
+                                : ""
+                            }`}
+                          >
+
+                            <span
+                              className={`flex h-7 w-7 items-center justify-center rounded-full text-sm font-semibold ${
+                                isToday
+                                  ? "bg-[#111] text-white"
+                                  : ""
+                              }`}
+                            >
+                              {day.day}
+                            </span>
+
+                            <div className="mt-2 space-y-1">
+
+                              {events
+                                .slice(0, 3)
+                                .map(
+                                  (record) => (
+
+                                    <div
+                                      key={
+                                        record.id
+                                      }
+                                      className={`rounded-md px-2 py-1.5 ${
+                                        getFinalDetailsFlags(record).needsAttention
+                                          ? "bg-red-50 text-red-800"
+                                          : getFinalDetailsFlags(record).dueSoon
+                                          ? "bg-amber-100 text-amber-900"
+                                          : "bg-[#f5efe4]"
+                                      }`}
+                                    >
+
+                                      <div className="truncate text-xs font-semibold">
+                                        {getFinalDetailsFlags(record).flagged
+                                          ? "⚠ "
+                                          : ""}
+                                        {valueToText(
+                                          record
+                                            .fields
+                                            ?.projectName
+                                        ) ||
+                                          "Event"}
+                                      </div>
+
+                                    </div>
+
+                                  )
+                                )}
+
+                              {events.length >
+                                3 && (
+
+                                <div className="px-1 text-[10px] font-semibold text-[#8b6e40]">
+                                  +
+                                  {events.length -
+                                    3}{" "}
+                                  more
+                                </div>
+
+                              )}
+
+                            </div>
+
+                          </button>
+                        );
+                      }
+                    )}
+
+                  </div>
+
+                </div>
+
+                <div className="mt-5">
+
+                  <h2 className="mb-3 text-xl font-bold">
+                    {formatLongDate(
+                      selectedDate
+                    )}
+                  </h2>
+
+                  {selectedEvents.length >
+                  0 ? (
+
+                    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+
+                      {selectedEvents.map(
+                        (record) => (
+
+                          <EventCard
+                            key={record.id}
+                            record={record}
+                          />
+
+                        )
+                      )}
+
+                    </div>
+
+                  ) : (
+
+                    <div className="rounded-2xl border border-[#e4dfd3] bg-white p-8 text-center text-[#756c60]">
+                      No events on this date.
+                    </div>
+
+                  )}
+
+                </div>
+
+              </>
+            )}
+
+          {/* ALL EVENTS LIST */}
+
+          {status === "success" &&
+            view === "list" && (
+
+              <div className="space-y-7">
+
+                {agendaGroups.map(
+                  (group) => (
+
+                    <div key={group.key}>
+
+                      <h2 className="mb-3 text-lg font-bold">
+                        {formatLongDate(
+                          group.key
+                        )}
+                      </h2>
+
+                      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+
+                        {group.events.map(
+                          (record) => (
+
+                            <EventCard
+                              key={record.id}
+                              record={record}
+                            />
+
+                          )
+                        )}
+
+                      </div>
+
+                    </div>
+
+                  )
+                )}
+
+              </div>
+            )}
+
+          {hasNextPage ||
+          isFetchingNextPage ? (
+
+            <div className="mt-6 flex items-center justify-center gap-2 text-sm text-[#756c60]">
+
+              <RefreshCw className="h-4 w-4 animate-spin" />
+
+              Loading remaining events...
+
+            </div>
+
+          ) : null}
+
+        </div>
+      </div>
+
+    </div>
+  );
+}
