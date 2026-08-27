@@ -1,0 +1,922 @@
+import { useMemo } from "react";
+
+import {
+    datasource,
+    q,
+    useRecords,
+} from "@/lib/datasource";
+
+import { Badge } from "@/components/ui/badge";
+
+import {
+    AlertTriangle,
+    CalendarDays,
+    Check,
+    CheckCircle2,
+    ChevronRight,
+    Circle,
+    Clock3,
+    FileCheck2,
+    PackageCheck,
+    Route,
+    ShieldCheck,
+    Truck,
+    UserCheck,
+    UsersRound,
+} from "lucide-react";
+
+/* =========================================================
+   VENUE EVENT + VENDOR STATUS TRACKER
+
+   DATA MODEL
+   ----------
+   One Status record = one vendor on one event.
+
+   Two ways to open this page:
+   ?venueRecordId=<VENUE RECORD ID>   → venue mode: every event at that
+                                         venue, grouped, all vendors.
+   ?recordId=<EVENT RECORD ID>        → event mode: one event, every
+                                         vendor on it (original behavior).
+   (?eventRecordId= also works as an explicit alias for event mode.)
+
+   If both are present, venue mode wins — this is what lets "venue info
+   portal" link here safely, since it sets both recordId and
+   venueRecordId to the venue's own id.
+
+   Replace STATUS_SOURCE_ID with the Softr datasource ID for
+   your Status database.
+
+   No recordId/venueRecordId = preview mode with representative dummy data.
+========================================================= */
+
+const ds = datasource.define({
+    status: "8cd29309-3afe-4cc6-8e1a-bea462a4e10b",
+});
+
+const statusFields = q.select({
+    name: "Name",
+
+    eventRecordId: "Event Record ID",
+    eventDate: "Event Date",
+
+    venueRecordId: "Venue Record ID",
+    venueName: "Venue Name",
+
+    vendorRecordId: "Vendor Record ID",
+    vendorName: "Vendor Name",
+    vendorType: "Vendor Type",
+
+    vendorRequestSubmitted: "Vendor Request Submitted",
+    vendorEstimateGenerated: "Vendor Estimate Generated",
+    vendorEstimateAcceptedDeposit:
+        "Vendor Estimate Accepted / Deposit Submitted",
+    orderEnteredQueue: "Order Entered Queue",
+    orderFinalized: "Order Finalized",
+
+    vendorInsurancePrepared:
+        "Vendor Insurance Prepared for Review",
+    orderPrepared: "Order Prepared",
+    staffConfirmed: "Staff Confirmed",
+
+    orderPickedUp: "Order Picked Up",
+    staffInRoute: "Staff In Route",
+    staffArrived: "Staff Arrived",
+    orderArrived: "Order Arrived",
+
+    nextStep: "Next Step",
+    statusNotes: "Status Notes",
+    lastUpdated: "Last Updated",
+
+    requiresInsurance: "Requires Insurance",
+    requiresStaff: "Requires Staff",
+    requiresPickup: "Requires Pickup",
+    requiresDelivery: "Requires Delivery",
+});
+
+const MILESTONE_GROUPS = [
+    {
+        id: "planning",
+        label: "Booking & Planning",
+        milestones: [
+            {
+                key: "vendorRequestSubmitted",
+                label: "Vendor Request Submitted",
+                icon: FileCheck2,
+            },
+            {
+                key: "vendorEstimateGenerated",
+                label: "Vendor Estimate Generated",
+                icon: FileCheck2,
+            },
+            {
+                key: "vendorEstimateAcceptedDeposit",
+                label: "Estimate Accepted / Deposit Submitted",
+                icon: CheckCircle2,
+            },
+            {
+                key: "orderEnteredQueue",
+                label: "Order In Queue",
+                icon: Clock3,
+            },
+            {
+                key: "orderFinalized",
+                label: "Order Finalized",
+                icon: PackageCheck,
+            },
+        ],
+    },
+    {
+        id: "readiness",
+        label: "Event Readiness",
+        milestones: [
+            {
+                key: "vendorInsurancePrepared",
+                label: "Vendor Insurance Prepared for Review",
+                icon: ShieldCheck,
+                condition: (fields) => toBoolean(fields.requiresInsurance),
+            },
+            {
+                key: "orderPrepared",
+                label: "Order Prepared",
+                icon: PackageCheck,
+            },
+            {
+                key: "staffConfirmed",
+                label: "Staff Confirmed",
+                icon: UserCheck,
+                condition: (fields) => toBoolean(fields.requiresStaff),
+            },
+        ],
+    },
+    {
+        id: "dayof",
+        label: "Event Day",
+        milestones: [
+            {
+                key: "orderPickedUp",
+                label: "Order Picked Up",
+                icon: Truck,
+                condition: (fields) => toBoolean(fields.requiresPickup),
+            },
+            {
+                key: "staffInRoute",
+                label: "Staff In Route",
+                icon: Route,
+                condition: (fields) => toBoolean(fields.requiresStaff),
+            },
+            {
+                key: "staffArrived",
+                label: "Staff Arrived",
+                icon: UsersRound,
+                condition: (fields) => toBoolean(fields.requiresStaff),
+            },
+            {
+                key: "orderArrived",
+                label: "Order Arrived",
+                icon: Truck,
+                condition: (fields) => toBoolean(fields.requiresDelivery),
+            },
+        ],
+    },
+];
+
+const PREVIEW_RECORDS = [
+    {
+        id: "preview-bar",
+        fields: {
+            name: "Bar Service · Preview Wedding",
+            eventRecordId: "event_preview_001",
+            eventDate: "2026-09-12",
+            venueRecordId: "venue_preview_001",
+            venueName: "Example Garden Venue",
+            vendorRecordId: "vendor_bar_001",
+            vendorName: "Cheers & Swizzles",
+            vendorType: "Bar Service",
+            vendorRequestSubmitted: "2026-07-22T10:15:00",
+            vendorEstimateGenerated: "2026-07-22T14:30:00",
+            vendorEstimateAcceptedDeposit: "2026-07-25T09:20:00",
+            orderEnteredQueue: "2026-07-25T09:25:00",
+            orderFinalized: "",
+            vendorInsurancePrepared: "",
+            orderPrepared: "",
+            staffConfirmed: "",
+            orderPickedUp: "",
+            staffInRoute: "",
+            staffArrived: "",
+            orderArrived: "",
+            nextStep: "Finalize beverage quantities after final guest count.",
+            statusNotes: "Client selected two signature cocktails.",
+            lastUpdated: "2026-08-23T13:42:00",
+            requiresInsurance: true,
+            requiresStaff: true,
+            requiresPickup: false,
+            requiresDelivery: true,
+        },
+    },
+    {
+        id: "preview-rentals",
+        fields: {
+            name: "Rentals · Preview Wedding",
+            eventRecordId: "event_preview_001",
+            eventDate: "2026-09-12",
+            venueRecordId: "venue_preview_001",
+            venueName: "Example Garden Venue",
+            vendorRecordId: "vendor_rental_001",
+            vendorName: "Example Event Rentals",
+            vendorType: "Rentals",
+            vendorRequestSubmitted: "2026-07-24T11:00:00",
+            vendorEstimateGenerated: "2026-07-25T10:10:00",
+            vendorEstimateAcceptedDeposit: "2026-07-29T15:00:00",
+            orderEnteredQueue: "2026-07-29T15:05:00",
+            orderFinalized: "2026-08-20T11:30:00",
+            vendorInsurancePrepared: "2026-08-22T09:15:00",
+            orderPrepared: "",
+            staffConfirmed: "",
+            orderPickedUp: "",
+            staffInRoute: "",
+            staffArrived: "",
+            orderArrived: "",
+            nextStep: "Warehouse team will prepare the rental order.",
+            statusNotes: "Delivery window confirmed with venue.",
+            lastUpdated: "2026-08-22T09:15:00",
+            requiresInsurance: true,
+            requiresStaff: false,
+            requiresPickup: false,
+            requiresDelivery: true,
+        },
+    },
+    {
+        id: "preview-entertainment",
+        fields: {
+            name: "Entertainment · Preview Wedding",
+            eventRecordId: "event_preview_001",
+            eventDate: "2026-09-12",
+            venueRecordId: "venue_preview_001",
+            venueName: "Example Garden Venue",
+            vendorRecordId: "vendor_dj_001",
+            vendorName: "Example Entertainment",
+            vendorType: "Entertainment",
+            vendorRequestSubmitted: "2026-07-26T13:15:00",
+            vendorEstimateGenerated: "2026-07-27T08:30:00",
+            vendorEstimateAcceptedDeposit: "2026-07-30T16:10:00",
+            orderEnteredQueue: "2026-07-30T16:15:00",
+            orderFinalized: "2026-08-18T10:30:00",
+            vendorInsurancePrepared: "2026-08-21T12:00:00",
+            orderPrepared: "2026-08-23T10:00:00",
+            staffConfirmed: "2026-08-23T10:15:00",
+            orderPickedUp: "",
+            staffInRoute: "",
+            staffArrived: "",
+            orderArrived: "",
+            nextStep: "No action needed right now.",
+            statusNotes: "Primary DJ and backup technician confirmed.",
+            lastUpdated: "2026-08-23T10:15:00",
+            requiresInsurance: true,
+            requiresStaff: true,
+            requiresPickup: false,
+            requiresDelivery: false,
+        },
+    },
+];
+
+function getUrlParams() {
+    if (typeof window === "undefined") return new URLSearchParams();
+    return new URLSearchParams(window.location.search);
+}
+
+function getVenueRecordId() {
+    return (getUrlParams().get("venueRecordId") || "").trim();
+}
+
+function getVenueNameParam() {
+    return (getUrlParams().get("venueName") || "").trim();
+}
+
+function getEventRecordId() {
+    const params = getUrlParams();
+    return (
+        params.get("eventRecordId") ||
+        params.get("recordId") ||
+        ""
+    ).trim();
+}
+
+function flattenPages(data) {
+    return data?.pages?.flatMap((page) => page.items || []) || [];
+}
+
+function text(value) {
+    if (value === null || value === undefined) return "";
+    if (typeof value === "string" || typeof value === "number") return String(value);
+    if (typeof value === "boolean") return value ? "Yes" : "No";
+    if (Array.isArray(value)) return value.map(text).filter(Boolean).join(", ");
+    if (typeof value === "object") {
+        return String(value.label || value.name || value.value || "");
+    }
+    return "";
+}
+
+function toBoolean(value) {
+    if (value === true) return true;
+    if (value === false) return false;
+    return ["yes", "true", "1", "required"].includes(text(value).trim().toLowerCase());
+}
+
+function parseDate(value) {
+    const raw = text(value).trim();
+    if (!raw) return null;
+    const date = new Date(raw);
+    return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatDate(value) {
+    const date = parseDate(value);
+    if (!date) return "";
+    return date.toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+    });
+}
+
+function formatTimestamp(value) {
+    const date = parseDate(value);
+    if (!date) return "";
+    return date.toLocaleString(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+    });
+}
+
+function startOfDay(date) {
+    return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function daysUntil(value) {
+    const eventDate = parseDate(value);
+    if (!eventDate) return null;
+    const today = startOfDay(new Date());
+    const target = startOfDay(eventDate);
+    return Math.ceil((target - today) / 86400000);
+}
+
+function eventCountdown(value) {
+    const days = daysUntil(value);
+    if (days === null) return "Event date not set";
+    if (days > 1) return `${days} days until event`;
+    if (days === 1) return "Tomorrow";
+    if (days === 0) return "Event is today";
+    return `${Math.abs(days)} day${Math.abs(days) === 1 ? "" : "s"} past event`;
+}
+
+function applicableMilestones(fields) {
+    return MILESTONE_GROUPS.flatMap((group) =>
+        group.milestones
+            .filter((milestone) => !milestone.condition || milestone.condition(fields))
+            .map((milestone) => ({ ...milestone, group: group.label, groupId: group.id }))
+    );
+}
+
+function vendorProgress(fields) {
+    const milestones = applicableMilestones(fields);
+    const complete = milestones.filter((milestone) =>
+        Boolean(text(fields[milestone.key]).trim())
+    ).length;
+
+    return {
+        complete,
+        total: milestones.length,
+        percent: milestones.length
+            ? Math.round((complete / milestones.length) * 100)
+            : 0,
+    };
+}
+
+function vendorStatus(fields) {
+    const milestones = applicableMilestones(fields);
+    if (!milestones.length) {
+        return { label: "Not Started", next: "", currentIndex: -1 };
+    }
+
+    const nextIndex = milestones.findIndex(
+        (milestone) => !text(fields[milestone.key]).trim()
+    );
+
+    if (nextIndex === -1) {
+        return {
+            label: "Complete",
+            next: "Complete",
+            currentIndex: milestones.length,
+        };
+    }
+
+    if (nextIndex === 0) {
+        return {
+            label: "Waiting to Start",
+            next: milestones[0].label,
+            currentIndex: 0,
+        };
+    }
+
+    return {
+        label: milestones[nextIndex - 1].label,
+        next: milestones[nextIndex].label,
+        currentIndex: nextIndex,
+    };
+}
+
+function attentionState(fields) {
+    const days = daysUntil(fields.eventDate);
+    const insuranceNeeded = toBoolean(fields.requiresInsurance);
+    const insuranceDone = Boolean(text(fields.vendorInsurancePrepared).trim());
+
+    if (
+        days !== null &&
+        days <= 7 &&
+        days >= 0 &&
+        insuranceNeeded &&
+        !insuranceDone
+    ) {
+        return { tone: "warning", label: "Insurance review needed" };
+    }
+
+    const progress = vendorProgress(fields);
+    if (progress.percent === 100) {
+        return { tone: "complete", label: "Ready" };
+    }
+
+    return { tone: "active", label: "In Progress" };
+}
+
+function StatusBadge({ tone, children }) {
+    const classes = {
+        complete: "border-emerald-200 bg-emerald-50 text-emerald-800",
+        active: "border-blue-200 bg-blue-50 text-blue-800",
+        warning: "border-amber-200 bg-amber-50 text-amber-900",
+    };
+
+    return (
+        <Badge variant="outline" className={classes[tone] || classes.active}>
+            {children}
+        </Badge>
+    );
+}
+
+function MilestoneItem({ milestone, value, active, upcoming }) {
+    const Icon = milestone.icon || Circle;
+    const complete = Boolean(text(value).trim());
+
+    return (
+        <div className="relative flex gap-3">
+            <div
+                className={`relative z-10 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border ${complete
+                        ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                        : active
+                            ? "border-[#C49A59] bg-[#FBF4E7] text-[#8B6530]"
+                            : "border-[#DED9CF] bg-white text-[#B2AAA0]"
+                    }`}
+            >
+                {complete ? <Check className="h-4 w-4" /> : <Icon className="h-3.5 w-3.5" />}
+            </div>
+
+            <div className="min-w-0 pb-5">
+                <p
+                    className={`text-sm font-semibold ${complete
+                            ? "text-[#1F1C18]"
+                            : active
+                                ? "text-[#7A592C]"
+                                : "text-[#8B8378]"
+                        }`}
+                >
+                    {milestone.label}
+                </p>
+
+                {complete ? (
+                    <p className="mt-0.5 text-xs text-[#81786D]">{formatTimestamp(value)}</p>
+                ) : active ? (
+                    <p className="mt-0.5 text-xs font-medium text-[#A07943]">
+                        Current next milestone
+                    </p>
+                ) : upcoming ? (
+                    <p className="mt-0.5 text-xs text-[#AAA196]">Upcoming</p>
+                ) : null}
+            </div>
+        </div>
+    );
+}
+
+function VendorCard({ record }) {
+    const fields = record.fields || {};
+    const progress = vendorProgress(fields);
+    const status = vendorStatus(fields);
+    const attention = attentionState(fields);
+
+    const flatMilestones = applicableMilestones(fields);
+    let runningIndex = 0;
+
+    const groups = MILESTONE_GROUPS.map((group) => ({
+        ...group,
+        milestones: group.milestones.filter(
+            (milestone) => !milestone.condition || milestone.condition(fields)
+        ),
+    })).filter((group) => group.milestones.length > 0);
+
+    return (
+        <article className="overflow-hidden rounded-[24px] border border-[#E4E0D7] bg-white shadow-sm">
+            <div className="border-b border-[#ECE8E0] px-5 py-5 sm:px-6">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                            <p className="truncate text-lg font-semibold tracking-[-0.01em] text-[#1E1B17]">
+                                {text(fields.vendorName) || "Vendor"}
+                            </p>
+
+                            {text(fields.vendorType) && (
+                                <Badge variant="outline" className="bg-[#F8F6F1] text-[#766D61]">
+                                    {text(fields.vendorType)}
+                                </Badge>
+                            )}
+                        </div>
+
+                        <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-[#81786D]">
+                            <span>
+                                {progress.complete} of {progress.total} milestones complete
+                            </span>
+                            {text(fields.lastUpdated) && (
+                                <span>Updated {formatTimestamp(fields.lastUpdated)}</span>
+                            )}
+                        </div>
+                    </div>
+
+                    <StatusBadge tone={attention.tone}>
+                        {attention.tone === "warning" && (
+                            <AlertTriangle className="mr-1 h-3.5 w-3.5" />
+                        )}
+                        {attention.label}
+                    </StatusBadge>
+                </div>
+
+                <div className="mt-4 h-2 overflow-hidden rounded-full bg-[#EFECE6]">
+                    <div
+                        className={`h-full rounded-full transition-all ${attention.tone === "warning"
+                                ? "bg-amber-500"
+                                : progress.percent === 100
+                                    ? "bg-emerald-500"
+                                    : "bg-[#B58A4D]"
+                            }`}
+                        style={{ width: `${progress.percent}%` }}
+                    />
+                </div>
+            </div>
+
+            <div className="grid gap-0 lg:grid-cols-[1fr_300px]">
+                <div className="p-5 sm:p-6">
+                    <div className="space-y-5">
+                        {groups.map((group) => (
+                            <div key={group.id}>
+                                <p className="mb-3 text-[10px] font-bold uppercase tracking-[0.11em] text-[#958B7E]">
+                                    {group.label}
+                                </p>
+
+                                <div className="relative">
+                                    <div className="absolute bottom-5 left-[15px] top-3 w-px bg-[#E8E3DA]" />
+
+                                    {group.milestones.map((milestone) => {
+                                        const index = runningIndex;
+                                        runningIndex += 1;
+
+                                        return (
+                                            <MilestoneItem
+                                                key={milestone.key}
+                                                milestone={milestone}
+                                                value={fields[milestone.key]}
+                                                active={
+                                                    !text(fields[milestone.key]).trim() &&
+                                                    index === status.currentIndex
+                                                }
+                                                upcoming={index > status.currentIndex}
+                                            />
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
+                <aside className="border-t border-[#ECE8E0] bg-[#FAF8F4] p-5 lg:border-l lg:border-t-0 sm:p-6">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-[#958B7E]">
+                        Current Status
+                    </p>
+
+                    <p className="mt-2 text-lg font-semibold text-[#1E1B17]">{status.label}</p>
+
+                    {text(fields.orderEnteredQueue) && !text(fields.orderFinalized) && (
+                        <div className="mt-4 rounded-xl border border-[#E4D5BA] bg-[#FBF5E9] p-3">
+                            <p className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#9A7440]">
+                                Order In Queue
+                            </p>
+                            <p className="mt-1 text-sm font-semibold text-[#62491F]">
+                                {eventCountdown(fields.eventDate)}
+                            </p>
+                        </div>
+                    )}
+
+                    <div className="mt-5">
+                        <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-[#958B7E]">
+                            Next Step
+                        </p>
+
+                        <div className="mt-2 flex gap-2">
+                            <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-[#B08449]" />
+                            <p className="text-sm leading-6 text-[#4F4941]">
+                                {text(fields.nextStep) || status.next || "No additional action shown."}
+                            </p>
+                        </div>
+                    </div>
+
+                    {text(fields.statusNotes) && (
+                        <div className="mt-5 border-t border-[#E5E0D7] pt-4">
+                            <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-[#958B7E]">
+                                Notes
+                            </p>
+                            <p className="mt-2 text-xs leading-5 text-[#776F64]">
+                                {text(fields.statusNotes)}
+                            </p>
+                        </div>
+                    )}
+                </aside>
+            </div>
+        </article>
+    );
+}
+
+export default function Block() {
+    const venueRecordId = getVenueRecordId();
+    const venueNameParam = getVenueNameParam();
+    const eventRecordId = getEventRecordId();
+
+    /*
+     * Venue mode wins when both are present — "venue info portal" sets
+     * recordId and venueRecordId to the same value (the venue's id), so
+     * checking venueRecordId first is what keeps that link from being
+     * misread as an event id.
+     */
+    const mode = venueRecordId ? "venue" : eventRecordId ? "event" : "preview";
+    const previewMode = mode === "preview";
+
+    const { data, status, error } = useRecords({
+        from: ds.status,
+        select: statusFields,
+        where:
+            mode === "venue"
+                ? q.text("venueRecordId").is(venueRecordId)
+                : mode === "event"
+                    ? q.text("eventRecordId").is(eventRecordId)
+                    : undefined,
+        count: mode === "venue" ? 200 : 50,
+    });
+
+    const records = useMemo(
+        () => (previewMode ? PREVIEW_RECORDS : flattenPages(data)),
+        [previewMode, data]
+    );
+
+    const sortedRecords = useMemo(
+        () =>
+            [...records].sort((a, b) => {
+                if (mode === "venue") {
+                    const dateDiff =
+                        (parseDate(a?.fields?.eventDate)?.getTime() ?? Infinity) -
+                        (parseDate(b?.fields?.eventDate)?.getTime() ?? Infinity);
+                    if (dateDiff !== 0) return dateDiff;
+                }
+                return (
+                    text(a?.fields?.vendorType).localeCompare(text(b?.fields?.vendorType)) ||
+                    text(a?.fields?.vendorName).localeCompare(text(b?.fields?.vendorName))
+                );
+            }),
+        [records, mode]
+    );
+
+    /*
+     * Venue mode: one status row per (event, vendor), so group by event
+     * for display. There's no separate Event Name field on this table
+     * today, so the event date stands in as the group label.
+     */
+    const eventGroups = useMemo(() => {
+        if (mode !== "venue") return [];
+
+        const groups = new Map();
+        for (const record of sortedRecords) {
+            const key = text(record?.fields?.eventRecordId) || "unknown";
+            if (!groups.has(key)) {
+                groups.set(key, {
+                    eventRecordId: key,
+                    eventDate: text(record?.fields?.eventDate),
+                    records: [],
+                });
+            }
+            groups.get(key).records.push(record);
+        }
+        return Array.from(groups.values());
+    }, [sortedRecords, mode]);
+
+    const eventDate = text(sortedRecords[0]?.fields?.eventDate);
+    const venueName =
+        venueNameParam || text(sortedRecords[0]?.fields?.venueName);
+
+    const overall = useMemo(() => {
+        const totals = sortedRecords.reduce(
+            (accumulator, record) => {
+                const progress = vendorProgress(record.fields || {});
+                accumulator.complete += progress.complete;
+                accumulator.total += progress.total;
+                return accumulator;
+            },
+            { complete: 0, total: 0 }
+        );
+
+        return {
+            ...totals,
+            percent: totals.total
+                ? Math.round((totals.complete / totals.total) * 100)
+                : 0,
+        };
+    }, [sortedRecords]);
+
+    const warningCount = sortedRecords.filter(
+        (record) => attentionState(record.fields || {}).tone === "warning"
+    ).length;
+
+    if (!previewMode && status === "pending") {
+        return (
+            <div className="min-h-[480px] bg-[#F5F3EE] p-8">
+                <div className="mx-auto max-w-lg rounded-2xl border bg-white p-10 text-center shadow-sm">
+                    <Clock3 className="mx-auto h-6 w-6 animate-pulse text-[#A07943]" />
+                    <p className="mt-3 text-sm font-medium text-[#6F675D]">
+                        Loading event status...
+                    </p>
+                </div>
+            </div>
+        );
+    }
+
+    if (!previewMode && status === "error") {
+        return (
+            <div className="min-h-[480px] bg-[#F5F3EE] p-8">
+                <div className="mx-auto max-w-lg rounded-2xl border border-red-200 bg-white p-8 shadow-sm">
+                    <AlertTriangle className="h-6 w-6 text-red-700" />
+                    <h2 className="mt-3 text-xl font-semibold">Unable to load event status</h2>
+                    <p className="mt-2 text-sm text-red-700">
+                        {error?.message ||
+                            "Check the Status datasource, Event Record ID field, and page recordId."}
+                    </p>
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="min-h-screen bg-[#F5F3EE] text-[#1E1B17]">
+            <div className="container py-6 sm:py-8">
+                <div className="content mx-auto max-w-6xl">
+                    <section className="overflow-hidden rounded-[28px] bg-[#191815] text-white shadow-lg">
+                        <div className="p-6 sm:p-8">
+                            <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+                                <div>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#D3B270]">
+                                            Event Delivery Status
+                                        </p>
+
+                                        {previewMode && (
+                                            <Badge className="border-0 bg-white/10 text-white hover:bg-white/10">
+                                                Preview Data
+                                            </Badge>
+                                        )}
+                                    </div>
+
+                                    <h1 className="mt-2 text-3xl font-semibold tracking-[-0.035em] sm:text-4xl">
+                                        {venueName || "Event Vendor Status"}
+                                    </h1>
+
+                                    <div className="mt-3 flex flex-wrap items-center gap-4 text-sm text-white/60">
+                                        {mode === "venue" ? (
+                                            <>
+                                                <span className="inline-flex items-center gap-2">
+                                                    <CalendarDays className="h-4 w-4" />
+                                                    {eventGroups.length} event{eventGroups.length === 1 ? "" : "s"}
+                                                </span>
+                                                <span>
+                                                    {sortedRecords.length} vendor{sortedRecords.length === 1 ? "" : "s"} total
+                                                </span>
+                                            </>
+                                        ) : (
+                                            <>
+                                                {eventDate && (
+                                                    <span className="inline-flex items-center gap-2">
+                                                        <CalendarDays className="h-4 w-4" />
+                                                        {formatDate(eventDate)}
+                                                    </span>
+                                                )}
+                                                {eventDate && <span>{eventCountdown(eventDate)}</span>}
+                                                <span>
+                                                    {sortedRecords.length} vendor{sortedRecords.length === 1 ? "" : "s"}
+                                                </span>
+                                            </>
+                                        )}
+                                    </div>
+                                </div>
+
+                                <div className="grid min-w-[280px] grid-cols-2 gap-2">
+                                    <div className="rounded-xl border border-white/10 bg-white/[0.05] p-3">
+                                        <p className="text-[9px] uppercase tracking-[0.08em] text-white/40">
+                                            Overall Progress
+                                        </p>
+                                        <p className="mt-1 text-2xl font-semibold">{overall.percent}%</p>
+                                    </div>
+
+                                    <div className="rounded-xl border border-white/10 bg-white/[0.05] p-3">
+                                        <p className="text-[9px] uppercase tracking-[0.08em] text-white/40">
+                                            Needs Attention
+                                        </p>
+                                        <p className="mt-1 text-2xl font-semibold">{warningCount}</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="mt-6 h-2 overflow-hidden rounded-full bg-white/10">
+                                <div
+                                    className="h-full rounded-full bg-[#D2AD69]"
+                                    style={{ width: `${overall.percent}%` }}
+                                />
+                            </div>
+                        </div>
+
+                        <div className="h-1.5 bg-[#B88A4C]" />
+                    </section>
+
+                    <section className="mt-4 rounded-2xl border border-[#E3DED5] bg-white px-5 py-4 shadow-sm">
+                        <div className="flex items-start gap-3">
+                            <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-700" />
+                            <div>
+                                <p className="text-sm font-semibold">
+                                    {mode === "venue"
+                                        ? "Every event at this venue. Every vendor's status."
+                                        : "One event. One view of every vendor."}
+                                </p>
+                                <p className="mt-1 text-xs leading-5 text-[#81786D]">
+                                    Each vendor moves through its own booking, preparation, and event-day milestones. The next step shown on each card is the most important action currently outstanding for that vendor.
+                                </p>
+                            </div>
+                        </div>
+                    </section>
+
+                    {sortedRecords.length === 0 ? (
+                        <section className="mt-5 rounded-[24px] border border-[#E3DED5] bg-white p-10 text-center shadow-sm">
+                            <Clock3 className="mx-auto h-7 w-7 text-[#A07943]" />
+                            <h2 className="mt-3 text-xl font-semibold">No vendor status records yet</h2>
+                            <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-[#81786D]">
+                                {mode === "venue"
+                                    ? "No vendor status records reference this venue yet."
+                                    : "Create one Status record for each vendor attached to this event and set its Event Record ID to the current event record."}
+                            </p>
+                        </section>
+                    ) : mode === "venue" ? (
+                        <div className="mt-5 space-y-8">
+                            {eventGroups.map((group) => (
+                                <div key={group.eventRecordId}>
+                                    <div className="mb-3 flex items-center gap-3">
+                                        <CalendarDays className="h-4 w-4 text-[#A07943]" />
+                                        <p className="text-sm font-semibold text-[#332E28]">
+                                            {group.eventDate
+                                                ? formatDate(group.eventDate)
+                                                : "Event date not set"}
+                                        </p>
+                                        <span className="text-xs text-[#91887D]">
+                                            {group.records.length} vendor{group.records.length === 1 ? "" : "s"}
+                                        </span>
+                                    </div>
+                                    <div className="space-y-5">
+                                        {group.records.map((record) => (
+                                            <VendorCard key={record.id} record={record} />
+                                        ))}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    ) : (
+                        <div className="mt-5 space-y-5">
+                            {sortedRecords.map((record) => (
+                                <VendorCard key={record.id} record={record} />
+                            ))}
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+}
