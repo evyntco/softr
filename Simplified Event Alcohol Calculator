@@ -1,0 +1,1570 @@
+import { useEffect, useMemo, useState } from "react";
+
+import {
+  datasource,
+  q,
+  useRecord,
+  useRecords,
+  useRecordUpdate,
+} from "@/lib/datasource";
+
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { toast } from "sonner";
+
+import {
+  Check,
+  Edit3,
+  Loader2,
+  Plus,
+  Search,
+  Trash2,
+  X,
+} from "lucide-react";
+
+const ds = datasource.define({
+  barMenu: "d965c654-577a-4991-b6bd-ef7955a67e06",
+  beverageConfig: "13cebc29-047e-40ee-b624-1475af7ea0d9",
+});
+
+const barMenuSelect = q.select({
+  recipe: "Recipe",
+  selectCocktail: "Select Cocktail",
+  category: "Category",
+  ingredient1: "Ingredient (1)",
+  ingredient2: "Ingredient (2)",
+  ingredient3: "Ingredient (3)",
+  ingredient4: "Ingredient (4)",
+  ingredient5: "Ingredient (5)",
+  qty1: "QTY (1)",
+  qty2: "QTY (2)",
+  qty3: "QTY (3)",
+  qty4: "QTY (4)",
+  qty5: "QTY (5)",
+  unit1: "Unit (1)",
+  unit2: "Unit (2)",
+  unit3: "Unit (3)",
+  unit4: "Unit (4)",
+  unit5: "Unit (5)",
+  alcoholIngredient: "Alcohol Ingredient",
+  alcoholIngredient2: "Alcohol Ingredient 2",
+  alcoholQty: "Alcohol Qty",
+  alcoholQty2: "Alcohol Qty 2",
+  alcoholUnit: "Alcohol Unit",
+  alcoholUnit3: "Alcohol Unit 3",
+});
+
+const beverageConfigSelect = q.select({
+  projectName: "Project Name",
+  reservationId: "Event Reservation ID",
+  eventDate: "Event Date",
+  eventHostName: "Event Host Name",
+  totalGuestCount: "Total Guest Count",
+  guestConsumingAlcohol: "Guest Consuming Alcohol (21+)",
+  serviceHours: "Service Hours",
+  suppliesNeeded: "Supplies Needed",
+});
+
+const beverageConfigSuppliesWrite = q.select({
+  suppliesNeeded: "Supplies Needed",
+});
+
+const ML_PER_OUNCE = 29.5735;
+const DEFAULT_SERVICE_HOURS = 4;
+const DRINKS_PER_GUEST_PER_HOUR = 1;
+const BUFFER_PERCENT = 10;
+const DEFAULT_LIQUOR_BOTTLE_ML = 1750;
+const DEFAULT_MIXER_PACKAGE_OZ = 32;
+
+const VOLUME_TO_ML = {
+  ml: 1,
+  l: 1000,
+  oz: ML_PER_OUNCE,
+  ounce: ML_PER_OUNCE,
+  ounces: ML_PER_OUNCE,
+  cup: 236.588,
+  cups: 236.588,
+  pt: 473.176,
+  pint: 473.176,
+  qt: 946.353,
+  quart: 946.353,
+  gal: 3785.41,
+  gallon: 3785.41,
+};
+
+const COUNT_UNITS = new Set([
+  "each",
+  "ea",
+  "count",
+  "piece",
+  "pieces",
+  "unit",
+  "units",
+]);
+
+function fieldText(value) {
+  if (value == null) return "";
+  if (Array.isArray(value)) {
+    return value.map((item) => fieldText(item)).filter(Boolean).join(", ");
+  }
+  if (typeof value === "object") {
+    return String(value.label || value.name || value.value || "");
+  }
+  return String(value);
+}
+
+function toNumber(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function nonNegative(value, fallback = 0) {
+  return Math.max(0, toNumber(value, fallback));
+}
+
+function safeCeil(value) {
+  return Math.ceil(Math.max(0, value) - 1e-9);
+}
+
+function formatNumber(value, digits = 0) {
+  return Number(value || 0).toLocaleString(undefined, {
+    maximumFractionDigits: digits,
+  });
+}
+
+function normalizeName(value) {
+  return fieldText(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function normalizeUnit(value, fallback = "oz") {
+  const cleaned = fieldText(value || fallback)
+    .toLowerCase()
+    .replace(/\./g, "")
+    .trim();
+
+  if (["fl oz", "floz", "fluid ounce", "fluid ounces"].includes(cleaned)) {
+    return "oz";
+  }
+  if (["millilitre", "millilitres"].includes(cleaned)) return "ml";
+  if (["litre", "litres"].includes(cleaned)) return "l";
+  return cleaned || fallback;
+}
+
+function toBaseAmount(amount, unit) {
+  const qty = nonNegative(amount);
+  const normalizedUnit = normalizeUnit(unit);
+
+  if (COUNT_UNITS.has(normalizedUnit)) {
+    return { dimension: "count", amount: qty, unit: "each" };
+  }
+
+  const multiplier = VOLUME_TO_ML[normalizedUnit];
+  if (multiplier) {
+    return { dimension: "volume", amount: qty * multiplier, unit: "ml" };
+  }
+
+  return { dimension: "unknown", amount: qty, unit: normalizedUnit };
+}
+
+function formatNeeded(amount, dimension, unit) {
+  if (dimension === "volume") {
+    if (amount >= 1000) return `${formatNumber(amount / 1000, 2)} L`;
+    return `${formatNumber(amount, 0)} mL`;
+  }
+  if (dimension === "count") return `${formatNumber(amount, 1)} each`;
+  return `${formatNumber(amount, 2)} ${unit}`;
+}
+
+function generateId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function getRecordIdFromUrl() {
+  if (typeof window === "undefined") return "";
+  const params = new URLSearchParams(window.location.search);
+  return (params.get("recordId") || params.get("configId") || "").trim();
+}
+
+function flattenPages(data) {
+  return data?.pages?.flatMap((page) => page.items || []) || [];
+}
+
+function isSodaBarCategory(value) {
+  const normalized = normalizeName(value);
+  return normalized.includes("soda bar") || normalized.includes("dirty soda");
+}
+
+function isLiquor(category) {
+  const normalized = normalizeName(category);
+  return (
+    normalized.includes("liquor") ||
+    normalized.includes("alcohol") ||
+    normalized.includes("spirit")
+  );
+}
+
+function escapeCsv(value) {
+  return `"${String(value ?? "").replace(/"/g, '""')}"`;
+}
+
+export default function Block() {
+  const urlRecordId = getRecordIdFromUrl();
+
+  const [selectedConfigId, setSelectedConfigId] = useState(urlRecordId);
+  const [configSearch, setConfigSearch] = useState("");
+  const [showConfigSearch, setShowConfigSearch] = useState(!urlRecordId);
+
+  const { data: selectedConfig, status: selectedConfigStatus } = useRecord({
+    from: ds.beverageConfig,
+    select: beverageConfigSelect,
+    recordId: selectedConfigId || null,
+  });
+
+  const configSearchReady = configSearch.trim().length >= 2;
+
+  const { data: configSearchData, status: configSearchStatus } = useRecords({
+    from: ds.beverageConfig,
+    select: beverageConfigSelect,
+    where: configSearchReady
+      ? q.or(
+          q.text("projectName").contains(configSearch.trim()),
+          q.text("reservationId").contains(configSearch.trim())
+        )
+      : q.text("projectName").is("__NO_CONFIG_SEARCH__"),
+    count: 20,
+    enabled: configSearchReady,
+  });
+
+  const configResults = useMemo(
+    () => flattenPages(configSearchData),
+    [configSearchData]
+  );
+
+  function selectConfig(record) {
+    if (!record?.id) return;
+
+    const id = String(record.id);
+    setSelectedConfigId(id);
+    setShowConfigSearch(false);
+
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.set("recordId", id);
+      window.history.replaceState({}, "", url.toString());
+    }
+  }
+
+  function clearConfig() {
+    setSelectedConfigId("");
+    setConfigSearch("");
+    setShowConfigSearch(true);
+
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("recordId");
+      window.history.replaceState({}, "", url.toString());
+    }
+  }
+
+  const [drinkingGuests, setDrinkingGuests] = useState(100);
+
+  useEffect(() => {
+    if (!selectedConfig) return;
+
+    const alcoholGuests = toNumber(
+      selectedConfig?.fields?.guestConsumingAlcohol
+    );
+    const totalGuests = toNumber(selectedConfig?.fields?.totalGuestCount);
+    const resolvedGuests = alcoholGuests > 0 ? alcoholGuests : totalGuests;
+
+    if (resolvedGuests > 0) setDrinkingGuests(resolvedGuests);
+  }, [selectedConfig]);
+
+  const serviceHours = useMemo(() => {
+    const saved = toNumber(selectedConfig?.fields?.serviceHours);
+    return saved > 0 ? saved : DEFAULT_SERVICE_HOURS;
+  }, [selectedConfig]);
+
+  const plannedCocktails = useMemo(() => {
+    const base =
+      nonNegative(drinkingGuests) *
+      serviceHours *
+      DRINKS_PER_GUEST_PER_HOUR;
+
+    return safeCeil(base * (1 + BUFFER_PERCENT / 100));
+  }, [drinkingGuests, serviceHours]);
+
+  const { data: barMenuData, status: barMenuStatus } = useRecords({
+    from: ds.barMenu,
+    select: barMenuSelect,
+    count: 100,
+  });
+
+  const menuCocktails = useMemo(() => {
+    return flattenPages(barMenuData)
+      .filter(
+        (item) =>
+          (item?.fields?.selectCocktail || item?.fields?.recipe) &&
+          !isSodaBarCategory(item?.fields?.category)
+      )
+      .map((item) => {
+        const ingredients = [];
+
+        for (let i = 1; i <= 5; i += 1) {
+          const ingredient = item?.fields?.[`ingredient${i}`];
+          const qty = item?.fields?.[`qty${i}`];
+          const unit = item?.fields?.[`unit${i}`];
+
+          if (ingredient && qty) {
+            ingredients.push({
+              id: `${item.id}-ingredient-${i}`,
+              name: fieldText(ingredient),
+              quantity: toNumber(qty),
+              unit: fieldText(unit) || "oz",
+              category: "mixer",
+            });
+          }
+        }
+
+        if (item?.fields?.alcoholIngredient && item?.fields?.alcoholQty) {
+          ingredients.push({
+            id: `${item.id}-alcohol-1`,
+            name: fieldText(item.fields.alcoholIngredient),
+            quantity: toNumber(item.fields.alcoholQty),
+            unit: fieldText(item.fields.alcoholUnit) || "oz",
+            category: "liquor",
+          });
+        }
+
+        if (item?.fields?.alcoholIngredient2 && item?.fields?.alcoholQty2) {
+          ingredients.push({
+            id: `${item.id}-alcohol-2`,
+            name: fieldText(item.fields.alcoholIngredient2),
+            quantity: toNumber(item.fields.alcoholQty2),
+            unit: fieldText(item.fields.alcoholUnit3) || "oz",
+            category: "liquor",
+          });
+        }
+
+        return {
+          id: String(item.id),
+          source: "Bar Menu",
+          name:
+            fieldText(item.fields.selectCocktail) ||
+            fieldText(item.fields.recipe) ||
+            "Unnamed Cocktail",
+          ingredients,
+        };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [barMenuData]);
+
+  const [cocktailSearch, setCocktailSearch] = useState("");
+  const [selectedMenuIds, setSelectedMenuIds] = useState([]);
+
+  const filteredMenuCocktails = useMemo(() => {
+    const search = cocktailSearch.trim().toLowerCase();
+    if (!search) return menuCocktails;
+
+    return menuCocktails.filter((cocktail) =>
+      cocktail.name.toLowerCase().includes(search)
+    );
+  }, [menuCocktails, cocktailSearch]);
+
+  function toggleMenuCocktail(cocktail) {
+    setSelectedMenuIds((current) =>
+      current.includes(cocktail.id)
+        ? current.filter((id) => id !== cocktail.id)
+        : [...current, cocktail.id]
+    );
+  }
+
+  const [customCocktails, setCustomCocktails] = useState([]);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingCocktailId, setEditingCocktailId] = useState(null);
+
+  const [cocktailForm, setCocktailForm] = useState({
+    name: "",
+    ingredients: [],
+  });
+
+  const [newIngredient, setNewIngredient] = useState({
+    name: "",
+    quantity: "",
+    unit: "oz",
+    category: "liquor",
+  });
+
+  function resetCocktailForm() {
+    setCocktailForm({ name: "", ingredients: [] });
+    setNewIngredient({
+      name: "",
+      quantity: "",
+      unit: "oz",
+      category: "liquor",
+    });
+    setEditingCocktailId(null);
+  }
+
+  function openAddCocktail() {
+    resetCocktailForm();
+    setDialogOpen(true);
+  }
+
+  function openEditCocktail(cocktail) {
+    setCocktailForm({
+      name: cocktail.name,
+      ingredients: cocktail.ingredients.map((ingredient) => ({
+        ...ingredient,
+        id: ingredient.id || generateId(),
+      })),
+    });
+    setEditingCocktailId(cocktail.id);
+    setDialogOpen(true);
+  }
+
+  function addIngredientToForm() {
+    const name = newIngredient.name.trim();
+    const quantity = toNumber(newIngredient.quantity);
+    const unit = newIngredient.unit.trim();
+
+    if (!name || quantity <= 0 || !unit) {
+      toast.error("Enter the ingredient, amount per cocktail, and unit.");
+      return;
+    }
+
+    setCocktailForm((current) => ({
+      ...current,
+      ingredients: [
+        ...current.ingredients,
+        {
+          id: generateId(),
+          name,
+          quantity,
+          unit,
+          category: newIngredient.category,
+        },
+      ],
+    }));
+
+    setNewIngredient({
+      name: "",
+      quantity: "",
+      unit: "oz",
+      category: "liquor",
+    });
+  }
+
+  function removeIngredientFromForm(id) {
+    setCocktailForm((current) => ({
+      ...current,
+      ingredients: current.ingredients.filter(
+        (ingredient) => ingredient.id !== id
+      ),
+    }));
+  }
+
+  function saveCustomCocktail() {
+    const name = cocktailForm.name.trim();
+
+    if (!name) {
+      toast.error("Enter a cocktail name.");
+      return;
+    }
+
+    if (!cocktailForm.ingredients.length) {
+      toast.error("Add at least one recipe ingredient.");
+      return;
+    }
+
+    if (editingCocktailId) {
+      setCustomCocktails((current) =>
+        current.map((cocktail) =>
+          cocktail.id === editingCocktailId
+            ? { ...cocktail, name, ingredients: cocktailForm.ingredients }
+            : cocktail
+        )
+      );
+    } else {
+      setCustomCocktails((current) => [
+        ...current,
+        {
+          id: generateId(),
+          source: "Custom",
+          name,
+          ingredients: cocktailForm.ingredients,
+        },
+      ]);
+    }
+
+    setDialogOpen(false);
+    resetCocktailForm();
+  }
+
+  function removeCustomCocktail(id) {
+    setCustomCocktails((current) =>
+      current.filter((cocktail) => cocktail.id !== id)
+    );
+  }
+
+  const selectedMenuCocktails = useMemo(
+    () =>
+      menuCocktails.filter((cocktail) =>
+        selectedMenuIds.includes(cocktail.id)
+      ),
+    [menuCocktails, selectedMenuIds]
+  );
+
+  const selectedCocktails = useMemo(
+    () => [...selectedMenuCocktails, ...customCocktails],
+    [selectedMenuCocktails, customCocktails]
+  );
+
+  const cocktailProduction = useMemo(() => {
+    if (!selectedCocktails.length) return [];
+
+    const base = Math.floor(plannedCocktails / selectedCocktails.length);
+    let remainder =
+      plannedCocktails - base * selectedCocktails.length;
+
+    return selectedCocktails.map((cocktail) => {
+      const extra = remainder > 0 ? 1 : 0;
+      if (remainder > 0) remainder -= 1;
+
+      return {
+        ...cocktail,
+        servings: base + extra,
+      };
+    });
+  }, [selectedCocktails, plannedCocktails]);
+
+  const calculatedIngredients = useMemo(() => {
+    const merged = new Map();
+
+    cocktailProduction.forEach((cocktail) => {
+      cocktail.ingredients.forEach((ingredient) => {
+        const name = ingredient.name.trim();
+        const perServing = nonNegative(ingredient.quantity);
+
+        if (!name || perServing <= 0 || cocktail.servings <= 0) return;
+
+        const base = toBaseAmount(perServing, ingredient.unit);
+        const category = isLiquor(ingredient.category)
+          ? "Liquor"
+          : ingredient.category === "garnish"
+          ? "Garnish"
+          : "Mixer / Ingredient";
+
+        const key = [
+          normalizeName(name),
+          category,
+          base.dimension,
+          base.unit,
+        ].join("::");
+
+        if (!merged.has(key)) {
+          merged.set(key, {
+            id: key.replace(/[^a-z0-9]+/g, "-"),
+            item: name,
+            category,
+            dimension: base.dimension,
+            baseUnit: base.unit,
+            totalBase: 0,
+            cocktails: [],
+          });
+        }
+
+        const row = merged.get(key);
+        row.totalBase += base.amount * cocktail.servings;
+        row.cocktails.push(cocktail.name);
+      });
+    });
+
+    return Array.from(merged.values())
+      .map((row) => {
+        const recipes = Array.from(new Set(row.cocktails)).join(", ");
+
+        if (row.category === "Liquor" && row.dimension === "volume") {
+          return {
+            ...row,
+            needed: formatNeeded(
+              row.totalBase,
+              row.dimension,
+              row.baseUnit
+            ),
+            purchaseQuantity: safeCeil(
+              row.totalBase / DEFAULT_LIQUOR_BOTTLE_ML
+            ),
+            purchaseUnit: "bottle",
+            packageSize: "1.75 L",
+            recipes,
+          };
+        }
+
+        if (row.dimension === "volume") {
+          const packageMl = DEFAULT_MIXER_PACKAGE_OZ * ML_PER_OUNCE;
+
+          return {
+            ...row,
+            needed: formatNeeded(
+              row.totalBase,
+              row.dimension,
+              row.baseUnit
+            ),
+            purchaseQuantity: safeCeil(row.totalBase / packageMl),
+            purchaseUnit: "container",
+            packageSize: `${DEFAULT_MIXER_PACKAGE_OZ} oz est.`,
+            recipes,
+          };
+        }
+
+        if (row.dimension === "count") {
+          return {
+            ...row,
+            needed: formatNeeded(
+              row.totalBase,
+              row.dimension,
+              row.baseUnit
+            ),
+            purchaseQuantity: safeCeil(row.totalBase),
+            purchaseUnit: "each",
+            packageSize: "each",
+            recipes,
+          };
+        }
+
+        return {
+          ...row,
+          needed: formatNeeded(
+            row.totalBase,
+            row.dimension,
+            row.baseUnit
+          ),
+          purchaseQuantity: safeCeil(row.totalBase),
+          purchaseUnit: row.baseUnit || "unit",
+          packageSize: "verify",
+          recipes,
+        };
+      })
+      .sort((a, b) => {
+        if (a.category === "Liquor" && b.category !== "Liquor") return -1;
+        if (b.category === "Liquor" && a.category !== "Liquor") return 1;
+        return a.item.localeCompare(b.item);
+      });
+  }, [cocktailProduction]);
+
+  const alcoholRows = calculatedIngredients.filter(
+    (row) => row.category === "Liquor"
+  );
+
+  const ingredientRows = calculatedIngredients.filter(
+    (row) => row.category !== "Liquor"
+  );
+
+  const recipeWarnings = cocktailProduction
+    .filter(
+      (cocktail) =>
+        cocktail.source === "Bar Menu" && cocktail.ingredients.length === 0
+    )
+    .map(
+      (cocktail) =>
+        `${cocktail.name} has no structured recipe ingredients in Bar Menu.`
+    );
+
+  const updateSuppliesNeeded = useRecordUpdate({
+    from: ds.beverageConfig,
+    fields: beverageConfigSuppliesWrite,
+  });
+
+  const [savingEstimate, setSavingEstimate] = useState(false);
+
+  const [copied, setCopied] = useState(false);
+
+  const shoppingListText = useMemo(() => {
+    const lines = [
+      "ESTIMATE ONLY — NO SUPPLIES ARE BEING PROVIDED BY THE SERVICE PROVIDER.",
+      "This list is for planning/reference purposes only and does not represent a commitment by the service provider to procure, purchase, deliver, or provide any listed item.",
+      "",
+      "COCKTAIL SHOPPING CALCULATION",
+      "",
+      `Drinking Guests: ${formatNumber(drinkingGuests)}`,
+      `Service Hours Used: ${formatNumber(serviceHours, 1)}`,
+      `Planned Cocktails: ${formatNumber(plannedCocktails)}`,
+      `Basis: ${DRINKS_PER_GUEST_PER_HOUR} drink / guest / hour + ${BUFFER_PERCENT}% buffer`,
+      "",
+      "COCKTAIL PRODUCTION",
+    ];
+
+    cocktailProduction.forEach((cocktail) => {
+      lines.push(`${cocktail.name}: ${cocktail.servings} cocktails`);
+    });
+
+    if (alcoholRows.length) {
+      lines.push("", "ALCOHOL");
+      alcoholRows.forEach((row) => {
+        lines.push(
+          `${row.item}: ${row.needed} total | ~${row.purchaseQuantity} ${row.purchaseUnit}${row.purchaseQuantity === 1 ? "" : "s"} (${row.packageSize})`
+        );
+      });
+    }
+
+    if (ingredientRows.length) {
+      lines.push("", "COCKTAIL INGREDIENTS");
+      ingredientRows.forEach((row) => {
+        lines.push(
+          `${row.item}: ${row.needed} total | est. ${row.purchaseQuantity} ${row.purchaseUnit}${row.purchaseQuantity === 1 ? "" : "s"}`
+        );
+      });
+    }
+
+    return lines.join("\n");
+  }, [
+    drinkingGuests,
+    serviceHours,
+    plannedCocktails,
+    cocktailProduction,
+    alcoholRows,
+    ingredientRows,
+  ]);
+
+  async function saveEstimateToSuppliesNeeded() {
+    if (!selectedConfigId) {
+      toast.error(
+        "Link a Beverage Configuration before saving the estimate."
+      );
+      return;
+    }
+
+    if (!selectedCocktails.length) {
+      toast.error(
+        "Select at least one cocktail before saving the estimate."
+      );
+      return;
+    }
+
+    if (!updateSuppliesNeeded.enabled) {
+      toast.error(
+        "Supplies Needed is not available for update. Confirm the Beverage Configuration datasource and field permissions."
+      );
+      return;
+    }
+
+    setSavingEstimate(true);
+
+    try {
+      await updateSuppliesNeeded.mutateAsync({
+        recordId: selectedConfigId,
+        fields: {
+          suppliesNeeded: shoppingListText,
+        },
+      });
+
+      toast.success(
+        "Estimate saved to Supplies Needed."
+      );
+    } catch (error) {
+      console.error(
+        "[Cocktail Estimator] Supplies Needed update failed:",
+        error
+      );
+
+      toast.error(
+        error?.message ||
+          "Unable to save the estimate to Supplies Needed."
+      );
+    } finally {
+      setSavingEstimate(false);
+    }
+  }
+
+  async function copyShoppingList() {
+    try {
+      await navigator.clipboard.writeText(shoppingListText);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      toast.error("Unable to copy calculation.");
+    }
+  }
+
+  function downloadCsv() {
+    const rows = [
+      [
+        "Category",
+        "Item",
+        "Total Needed",
+        "Purchase Quantity",
+        "Purchase Unit",
+        "Package Size",
+        "Recipes",
+      ],
+      ...calculatedIngredients.map((row) => [
+        row.category,
+        row.item,
+        row.needed,
+        row.purchaseQuantity,
+        row.purchaseUnit,
+        row.packageSize,
+        row.recipes,
+      ]),
+    ];
+
+    const csv = rows
+      .map((row) => row.map(escapeCsv).join(","))
+      .join("\n");
+
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+
+    anchor.href = url;
+    anchor.download = "cocktail-shopping-calculation.csv";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  const configLoading =
+    selectedConfigStatus === "pending" ||
+    selectedConfigStatus === "loading";
+
+  return (
+    <div className="container py-8">
+      <div className="content mx-auto max-w-7xl">
+        <div className="mb-8">
+          <h1 className="font-heading text-4xl">
+            Cocktail Shopping Estimator
+          </h1>
+
+          <p className="mt-2 max-w-3xl text-lg text-muted-foreground">
+            Enter the number of drinking guests and select the cocktails. Alcohol and cocktail ingredient quantities are calculated automatically from Bar Menu recipes or a custom recipe.
+          </p>
+        </div>
+
+        <section className="mb-6 rounded-xl border bg-card p-5 shadow-sm">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold">
+                Beverage Configuration
+              </h2>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Optional. A recordId in the URL loads automatically and can provide drinking guests and service hours.
+              </p>
+            </div>
+
+            {selectedConfigId && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={clearConfig}
+              >
+                <X className="mr-1 h-4 w-4" />
+                Clear
+              </Button>
+            )}
+          </div>
+
+          {selectedConfigId && configLoading ? (
+            <div className="mt-4 flex items-center gap-2 rounded-lg bg-muted/40 p-4 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading event...
+            </div>
+          ) : selectedConfig && !showConfigSearch ? (
+            <div className="mt-4 flex flex-col gap-3 rounded-lg bg-muted/30 p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="font-semibold">
+                  {fieldText(selectedConfig?.fields?.projectName) ||
+                    "Unnamed Project"}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {[
+                    fieldText(selectedConfig?.fields?.eventDate),
+                    fieldText(selectedConfig?.fields?.eventHostName),
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </p>
+              </div>
+
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => setShowConfigSearch(true)}
+              >
+                Change Event
+              </Button>
+            </div>
+          ) : (
+            <div className="relative mt-4 max-w-xl">
+              <Search className="absolute left-3 top-1/2 z-10 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+
+              <Input
+                value={configSearch}
+                onChange={(event) => setConfigSearch(event.target.value)}
+                placeholder="Search Project Name or Reservation ID..."
+                className="pl-9"
+              />
+
+              {showConfigSearch && configSearchReady && (
+                <div className="absolute z-30 mt-1 max-h-72 w-full overflow-auto rounded-md border bg-background shadow-lg">
+                  {configSearchStatus === "pending" ? (
+                    <div className="p-3 text-sm text-muted-foreground">
+                      Searching...
+                    </div>
+                  ) : configResults.length ? (
+                    configResults.map((record) => (
+                      <button
+                        key={record.id}
+                        type="button"
+                        onClick={() => selectConfig(record)}
+                        className="w-full border-b px-4 py-3 text-left last:border-b-0 hover:bg-muted"
+                      >
+                        <p className="text-sm font-medium">
+                          {fieldText(record?.fields?.projectName) ||
+                            "Unnamed Project"}
+                        </p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {[
+                            fieldText(record?.fields?.reservationId),
+                            fieldText(record?.fields?.eventDate),
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </p>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="p-3 text-sm text-muted-foreground">
+                      No matching configurations.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+
+        <div className="grid items-start gap-6 lg:grid-cols-3">
+          <div className="space-y-6 lg:col-span-2">
+            <SectionCard
+              step="1"
+              eyebrow="Guests"
+              title="How many guests are drinking?"
+              description="This is the only quantity input needed for the cocktail calculation."
+            >
+              <div className="max-w-sm">
+                <NumberInput
+                  label="Drinking Guests"
+                  value={drinkingGuests}
+                  min={0}
+                  step={1}
+                  onChange={setDrinkingGuests}
+                />
+              </div>
+
+              <div className="mt-4 rounded-lg bg-muted/40 p-3 text-xs text-muted-foreground">
+                Calculation basis: {formatNumber(serviceHours, 1)} service hours × {DRINKS_PER_GUEST_PER_HOUR} drink per guest per hour + {BUFFER_PERCENT}% planning buffer.
+                {selectedConfig
+                  ? " Service hours are read from the linked Beverage Configuration when available."
+                  : ` No Beverage Configuration is linked, so ${DEFAULT_SERVICE_HOURS} service hours is being used.`}
+              </div>
+            </SectionCard>
+
+            <SectionCard
+              step="2"
+              eyebrow="Cocktails"
+              title="Select the cocktails being served"
+              description="Bar Menu recipes drive the math automatically. Planned servings are split evenly across selected cocktails."
+            >
+              <div className="flex flex-col gap-3 sm:flex-row">
+                <div className="relative flex-1">
+                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={cocktailSearch}
+                    onChange={(event) =>
+                      setCocktailSearch(event.target.value)
+                    }
+                    placeholder="Search Bar Menu cocktails..."
+                    className="pl-9"
+                  />
+                </div>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={openAddCocktail}
+                >
+                  <Plus className="mr-2 h-4 w-4" />
+                  Custom Cocktail
+                </Button>
+              </div>
+
+              <div className="mt-4 max-h-[360px] overflow-y-auto rounded-xl border">
+                {barMenuStatus === "pending" ? (
+                  <div className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Loading Bar Menu...
+                  </div>
+                ) : filteredMenuCocktails.length ? (
+                  <div className="divide-y">
+                    {filteredMenuCocktails.map((cocktail) => {
+                      const selected = selectedMenuIds.includes(cocktail.id);
+
+                      return (
+                        <button
+                          key={cocktail.id}
+                          type="button"
+                          onClick={() => toggleMenuCocktail(cocktail)}
+                          className={`flex w-full items-center justify-between gap-4 px-4 py-3 text-left transition ${
+                            selected ? "bg-primary/5" : "hover:bg-muted/40"
+                          }`}
+                        >
+                          <div>
+                            <p className="text-sm font-medium">{cocktail.name}</p>
+                            <p className="mt-0.5 text-xs text-muted-foreground">
+                              Bar Menu recipe
+                            </p>
+                          </div>
+
+                          <span
+                            className={`flex h-6 w-6 items-center justify-center rounded-full border ${
+                              selected
+                                ? "border-primary bg-primary text-primary-foreground"
+                                : "border-muted-foreground/30"
+                            }`}
+                          >
+                            {selected && <Check className="h-3.5 w-3.5" />}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="p-4 text-sm text-muted-foreground">
+                    No matching cocktails.
+                  </div>
+                )}
+              </div>
+
+              {selectedCocktails.length > 0 && (
+                <div className="mt-5">
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Selected Cocktails
+                  </p>
+
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {cocktailProduction.map((cocktail) => (
+                      <div
+                        key={cocktail.id}
+                        className="flex items-center justify-between gap-3 rounded-xl border bg-muted/20 p-3"
+                      >
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold">
+                            {cocktail.name}
+                          </p>
+                          <p className="mt-0.5 text-xs text-muted-foreground">
+                            {cocktail.source} · {formatNumber(cocktail.servings)} calculated servings
+                          </p>
+                        </div>
+
+                        {cocktail.source === "Custom" ? (
+                          <div className="flex">
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="ghost"
+                              onClick={() => openEditCocktail(cocktail)}
+                            >
+                              <Edit3 className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="ghost"
+                              onClick={() =>
+                                removeCustomCocktail(cocktail.id)
+                              }
+                            >
+                              <Trash2 className="h-4 w-4 text-destructive" />
+                            </Button>
+                          </div>
+                        ) : (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => toggleMenuCocktail(cocktail)}
+                          >
+                            Remove
+                          </Button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </SectionCard>
+
+            {selectedCocktails.length > 0 && (
+              <SectionCard
+                step="3"
+                eyebrow="Calculated"
+                title="Recipe-based alcohol & ingredient calculation"
+                description="Everything below is generated automatically from the selected Bar Menu recipes or custom cocktail recipes."
+              >
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <MetricBox
+                    label="Drinking Guests"
+                    value={formatNumber(drinkingGuests)}
+                  />
+                  <MetricBox
+                    label="Selected Cocktails"
+                    value={formatNumber(selectedCocktails.length)}
+                  />
+                  <MetricBox
+                    label="Planned Cocktails"
+                    value={formatNumber(plannedCocktails)}
+                  />
+                </div>
+
+                {recipeWarnings.length > 0 && (
+                  <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-800">
+                    {recipeWarnings.map((warning) => (
+                      <p key={warning}>⚠ {warning}</p>
+                    ))}
+                  </div>
+                )}
+
+                <CalculatedList
+                  title="Alcohol Needed"
+                  rows={alcoholRows}
+                  emptyText="No alcohol ingredients were found in the selected recipes."
+                />
+
+                <CalculatedList
+                  title="Cocktail Ingredients"
+                  rows={ingredientRows}
+                  emptyText="No mixer or garnish ingredients were found in the selected recipes."
+                />
+
+                <div className="mt-5 rounded-lg bg-muted/40 p-3 text-xs text-muted-foreground">
+                  Recipe totals come directly from per-cocktail recipe quantities. Purchase counts are estimates using 1.75 L liquor bottles and 32 oz mixer containers.
+                </div>
+              </SectionCard>
+            )}
+          </div>
+
+          <aside>
+            <div className="sticky top-6 rounded-xl border-2 border-primary bg-card shadow-sm">
+              <div className="border-b p-6">
+                <span className="inline-flex rounded-full bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground">
+                  Recipe Calculation
+                </span>
+                <h2 className="mt-3 text-2xl font-semibold">
+                  Cocktail Shopping List
+                </h2>
+                <div className="mt-2 text-4xl font-bold text-primary">
+                  {formatNumber(plannedCocktails)}
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Planned cocktails including buffer
+                </p>
+              </div>
+
+              <div className="space-y-5 p-6">
+                {selectedCocktails.length === 0 ? (
+                  <div className="rounded-lg bg-muted/40 p-4 text-sm text-muted-foreground">
+                    Select at least one cocktail to generate the shopping calculation.
+                  </div>
+                ) : (
+                  <>
+                    <PurchaseList title="Alcohol">
+                      {alcoholRows.length ? (
+                        alcoholRows.map((row) => (
+                          <PurchaseRow
+                            key={row.id}
+                            name={row.item}
+                            quantity={`${row.purchaseQuantity} ${row.purchaseUnit}${row.purchaseQuantity === 1 ? "" : "s"}`}
+                            detail={`${row.needed} total · ${row.packageSize} estimate`}
+                          />
+                        ))
+                      ) : (
+                        <p className="text-xs text-muted-foreground">
+                          No alcohol rows.
+                        </p>
+                      )}
+                    </PurchaseList>
+
+                    <PurchaseList title="Cocktail Ingredients">
+                      {ingredientRows.length ? (
+                        ingredientRows.map((row) => (
+                          <PurchaseRow
+                            key={row.id}
+                            name={row.item}
+                            quantity={`${row.purchaseQuantity} ${row.purchaseUnit}${row.purchaseQuantity === 1 ? "" : "s"}`}
+                            detail={`${row.needed} total · ${row.packageSize}`}
+                          />
+                        ))
+                      ) : (
+                        <p className="text-xs text-muted-foreground">
+                          No ingredient rows.
+                        </p>
+                      )}
+                    </PurchaseList>
+
+                    <Button
+                      type="button"
+                      onClick={copyShoppingList}
+                      className="w-full"
+                    >
+                      {copied ? "Copied" : "Copy Calculation"}
+                    </Button>
+
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={downloadCsv}
+                      className="w-full"
+                    >
+                      Download CSV
+                    </Button>
+
+                    {selectedConfig ? (
+                      <div className="space-y-3">
+                        <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs leading-5 text-amber-900">
+                          <strong>Estimate only.</strong> No supplies are being provided by the service provider. Saving this calculation only updates the Beverage Configuration <strong>Supplies Needed</strong> field for planning/reference.
+                        </div>
+
+                        <Button
+                          type="button"
+                          onClick={saveEstimateToSuppliesNeeded}
+                          disabled={
+                            savingEstimate ||
+                            !selectedCocktails.length ||
+                            !updateSuppliesNeeded.enabled
+                          }
+                          className="w-full"
+                        >
+                          {savingEstimate && (
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          )}
+                          Save Estimate to Supplies Needed
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-center">
+                        <p className="text-sm font-semibold text-amber-800">
+                          Link a Beverage Configuration to save this estimate to Supplies Needed.
+                        </p>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          </aside>
+        </div>
+
+        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+          <DialogContent className="max-h-[85vh] max-w-xl overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>
+                {editingCocktailId
+                  ? "Edit Custom Cocktail"
+                  : "Add Custom Cocktail"}
+              </DialogTitle>
+            </DialogHeader>
+
+            <div className="space-y-5 py-3">
+              <label className="block space-y-2">
+                <span className="text-xs font-medium">Cocktail Name</span>
+                <Input
+                  value={cocktailForm.name}
+                  onChange={(event) =>
+                    setCocktailForm((current) => ({
+                      ...current,
+                      name: event.target.value,
+                    }))
+                  }
+                  placeholder="e.g., Spicy Margarita"
+                />
+              </label>
+
+              <div className="border-t pt-4">
+                <h4 className="text-sm font-semibold">Recipe Ingredients</h4>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Define one serving of the custom cocktail. The main estimator will use this recipe automatically.
+                </p>
+
+                {cocktailForm.ingredients.length > 0 && (
+                  <div className="mt-3 space-y-2">
+                    {cocktailForm.ingredients.map((ingredient) => (
+                      <div
+                        key={ingredient.id}
+                        className="flex items-center justify-between gap-3 rounded-lg bg-muted/40 p-3"
+                      >
+                        <div>
+                          <p className="text-sm font-medium">
+                            {ingredient.name}
+                          </p>
+                          <p className="mt-0.5 text-xs text-muted-foreground">
+                            {ingredient.quantity} {ingredient.unit} per cocktail · {ingredient.category}
+                          </p>
+                        </div>
+
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          onClick={() =>
+                            removeIngredientFromForm(ingredient.id)
+                          }
+                        >
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="mt-4 space-y-3 rounded-lg border p-3">
+                  <label className="block space-y-1">
+                    <span className="text-xs font-medium">Ingredient</span>
+                    <Input
+                      value={newIngredient.name}
+                      onChange={(event) =>
+                        setNewIngredient((current) => ({
+                          ...current,
+                          name: event.target.value,
+                        }))
+                      }
+                      placeholder="e.g., Tequila Blanco"
+                    />
+                  </label>
+
+                  <div className="grid grid-cols-3 gap-3">
+                    <label className="block space-y-1">
+                      <span className="text-xs font-medium">Amount</span>
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.25"
+                        value={newIngredient.quantity}
+                        onChange={(event) =>
+                          setNewIngredient((current) => ({
+                            ...current,
+                            quantity: event.target.value,
+                          }))
+                        }
+                        placeholder="2"
+                      />
+                    </label>
+
+                    <label className="block space-y-1">
+                      <span className="text-xs font-medium">Unit</span>
+                      <select
+                        value={newIngredient.unit}
+                        onChange={(event) =>
+                          setNewIngredient((current) => ({
+                            ...current,
+                            unit: event.target.value,
+                          }))
+                        }
+                        className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                      >
+                        <option value="oz">oz</option>
+                        <option value="ml">mL</option>
+                        <option value="l">L</option>
+                        <option value="each">each</option>
+                      </select>
+                    </label>
+
+                    <label className="block space-y-1">
+                      <span className="text-xs font-medium">Type</span>
+                      <select
+                        value={newIngredient.category}
+                        onChange={(event) =>
+                          setNewIngredient((current) => ({
+                            ...current,
+                            category: event.target.value,
+                          }))
+                        }
+                        className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+                      >
+                        <option value="liquor">Alcohol</option>
+                        <option value="mixer">Mixer</option>
+                        <option value="garnish">Garnish</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={addIngredientToForm}
+                    className="w-full"
+                  >
+                    <Plus className="mr-2 h-4 w-4" />
+                    Add Recipe Ingredient
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setDialogOpen(false);
+                  resetCocktailForm();
+                }}
+              >
+                Cancel
+              </Button>
+
+              <Button type="button" onClick={saveCustomCocktail}>
+                {editingCocktailId
+                  ? "Update Cocktail"
+                  : "Save Cocktail"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
+    </div>
+  );
+}
+
+function SectionCard({ step, eyebrow, title, description, children }) {
+  return (
+    <section className="rounded-xl border bg-card text-card-foreground shadow-sm">
+      <div className="border-b p-6">
+        <div className="flex items-center gap-2 text-sm font-semibold text-primary">
+          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-xs text-primary-foreground">
+            {step}
+          </span>
+          {eyebrow}
+        </div>
+        <h2 className="mt-2 text-2xl font-semibold tracking-tight">
+          {title}
+        </h2>
+        <p className="mt-2 text-sm text-muted-foreground">{description}</p>
+      </div>
+      <div className="p-6">{children}</div>
+    </section>
+  );
+}
+
+function NumberInput({ label, value, onChange, min = 0, step = 1 }) {
+  return (
+    <label className="block space-y-2">
+      <span className="text-xs font-medium">{label}</span>
+      <input
+        type="number"
+        min={min}
+        step={step}
+        value={value}
+        onChange={(event) =>
+          onChange(toNumber(event.target.value, 0))
+        }
+        className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+      />
+    </label>
+  );
+}
+
+function MetricBox({ label, value }) {
+  return (
+    <div className="rounded-lg bg-muted p-4">
+      <div className="mb-1 text-xs text-muted-foreground">{label}</div>
+      <div className="text-2xl font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function CalculatedList({ title, rows, emptyText }) {
+  return (
+    <div className="mt-6">
+      <h3 className="text-sm font-semibold">{title}</h3>
+
+      <div className="mt-3 overflow-hidden rounded-xl border">
+        {rows.length ? (
+          <div className="divide-y">
+            {rows.map((row) => (
+              <div
+                key={row.id}
+                className="grid gap-3 px-4 py-3 sm:grid-cols-[minmax(0,1.3fr)_150px_150px]"
+              >
+                <div>
+                  <p className="text-sm font-medium">{row.item}</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    Used in {row.recipes}
+                  </p>
+                </div>
+
+                <div>
+                  <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Recipe Total
+                  </p>
+                  <p className="mt-1 text-sm font-semibold">{row.needed}</p>
+                </div>
+
+                <div>
+                  <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Estimated Quantity
+                  </p>
+                  <p className="mt-1 text-sm font-semibold">
+                    {row.purchaseQuantity} {row.purchaseUnit}
+                    {row.purchaseQuantity === 1 ? "" : "s"}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {row.packageSize}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="p-4 text-sm text-muted-foreground">
+            {emptyText}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PurchaseList({ title, children }) {
+  return (
+    <div className="border-t pt-4">
+      <h3 className="mb-3 text-sm font-semibold">{title}</h3>
+      <div className="space-y-3">{children}</div>
+    </div>
+  );
+}
+
+function PurchaseRow({ name, quantity, detail }) {
+  return (
+    <div>
+      <div className="flex justify-between gap-3 text-sm">
+        <span className="font-medium">{name}</span>
+        <span className="text-right font-semibold">{quantity}</span>
+      </div>
+      <p className="mt-1 text-xs text-muted-foreground">{detail}</p>
+    </div>
+  );
+}
