@@ -1,0 +1,677 @@
+FINAL DETAILS — EMAIL + LOCK PATCH
+===================================
+Apply these snippets to the existing Softr Vibe "Final Details" block.
+Each block below is labeled with an anchor from your current code so you
+can find the spot and paste. Nothing here replaces datasource IDs or
+existing field mappings except where explicitly noted.
+
+
+------------------------------------------------------------
+1) NEW CONSTANT — add right after `const ds = datasource.define({...});`
+   and before the "BEVERAGE CONFIGURATION — READ" comment block.
+------------------------------------------------------------
+
+/* =========================================================
+   FINAL DETAILS EMAIL WEBHOOK
+
+   Confirm & Lock posts a JSON summary of the confirmed event to
+   this URL. Point it at a Make.com / Zapier / n8n webhook that
+   renders and sends the final-details email (and, optionally,
+   writes a "Final Details Emailed" timestamp back to Notion from
+   the automation side, since this page never needs to know that
+   happened).
+
+   Leave this blank to skip the email step — Confirm & Lock will
+   still save and lock the record, it just won't call out.
+========================================================= */
+
+const FINAL_DETAILS_WEBHOOK_URL =
+  ""; // e.g. "https://hook.us1.make.com/xxxxxxxxxxxxxxxxxxxx"
+
+
+------------------------------------------------------------
+2) READ FIELD — inside `beverageReadFields`, right after the existing
+   finalDetailsConfirmed entry (before `servicePackage: "Service Package",`)
+------------------------------------------------------------
+
+  /*
+   * On-record change history. This assumes a single text/rich-text
+   * property where each logged change is its own line. If your
+   * Notion schema stores changes differently (separate fields,
+   * a linked database, etc.) tell me and I'll change how this is
+   * read and rendered instead of assuming a newline-per-entry log.
+   */
+  changeLog: "Change Log",
+
+
+------------------------------------------------------------
+3) WRITE FIELD — inside `beverageCoreWriteFields`, right after the
+   existing `finalDetailsAssigned: "Final Details Assigned", ...` line
+   (before `servicePackage: "Service Package",`)
+------------------------------------------------------------
+
+  /*
+   * Written only by Confirm & Lock, never by the regular Save Draft
+   * path. Setting this true is what flips this page into its
+   * read-only, locked view on next load.
+   */
+  finalDetailsConfirmed: "Final Details Confirmed",
+
+
+------------------------------------------------------------
+4) HELPER FUNCTION — add in the HELPERS section, right after the
+   `getRecordIdFromUrl()` function (top-level, outside the component).
+------------------------------------------------------------
+
+async function postFinalDetailsWebhook(payload) {
+  if (!FINAL_DETAILS_WEBHOOK_URL) {
+    return { skipped: true };
+  }
+
+  const response = await fetch(FINAL_DETAILS_WEBHOOK_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `Webhook responded with ${response.status}`
+    );
+  }
+
+  return { skipped: false };
+}
+
+
+------------------------------------------------------------
+5) NEW STATE — inside the component, right after
+   `const [dirty, setDirty] = useState(false);`
+------------------------------------------------------------
+
+  const [finalDetailsBusy, setFinalDetailsBusy] =
+    useState(false);
+
+
+------------------------------------------------------------
+6) MODIFY `save()` — three small changes to the existing function.
+   Shown as full before/after so the diff is unambiguous.
+------------------------------------------------------------
+
+--- BEFORE (function signature + every early-exit `return;`) ---
+
+  async function save() {
+    if (finalDetailsAlreadyConfirmed) {
+      toast.info(
+        "Final Details is already confirmed. Submit a Change Request for any updates."
+      );
+      return;
+    }
+
+    if (previewMode) {
+      toast.info(
+        "Preview mode only. Open this page with a Beverage Configuration record to save changes."
+      );
+      return;
+    }
+
+    if (!recordId) {
+      return;
+    }
+
+    if (!updatesEnabled) {
+      toast.error(
+        "One or more Beverage Configuration write groups are not available."
+      );
+      return;
+    }
+
+    if (!formData.eventDate) {
+      toast.error(
+        "Event Date is required."
+      );
+      return;
+    }
+
+    if (
+      !formData.eventLocation.trim()
+    ) {
+      toast.error(
+        "Venue Location is required."
+      );
+      return;
+    }
+
+--- AFTER ---
+
+  async function save(options = {}) {
+    const { confirming = false } = options;
+
+    if (finalDetailsAlreadyConfirmed) {
+      toast.info(
+        "Final Details is already confirmed. Submit a Change Request for any updates."
+      );
+      return false;
+    }
+
+    if (previewMode) {
+      toast.info(
+        "Preview mode only. Open this page with a Beverage Configuration record to save changes."
+      );
+      return false;
+    }
+
+    if (!recordId) {
+      return false;
+    }
+
+    if (!updatesEnabled) {
+      toast.error(
+        "One or more Beverage Configuration write groups are not available."
+      );
+      return false;
+    }
+
+    if (!formData.eventDate) {
+      toast.error(
+        "Event Date is required."
+      );
+      return false;
+    }
+
+    if (
+      !formData.eventLocation.trim()
+    ) {
+      toast.error(
+        "Venue Location is required."
+      );
+      return false;
+    }
+
+(Note: `onClick={save}` elsewhere in the file passes the click event as
+the first argument. That's harmless — `options.confirming` on an event
+object is just `undefined`, so `confirming` still defaults to `false`.)
+
+
+--- BEFORE (inside `const coreFields = { ... }`, the very last field) ---
+
+      waterResponsibility:
+        formData.waterResponsibility.trim(),
+    };
+
+--- AFTER ---
+
+      waterResponsibility:
+        formData.waterResponsibility.trim(),
+
+      ...(confirming
+        ? { finalDetailsConfirmed: true }
+        : {}),
+    };
+
+
+--- BEFORE (the try/catch at the bottom of `save()`) ---
+
+    try {
+      await updateCoreEvent.mutateAsync({
+        recordId,
+        fields: coreFields,
+      });
+
+      await updatePackageDetails.mutateAsync({
+        recordId,
+        fields: packageFields,
+      });
+
+      await updateAddOnDetails.mutateAsync({
+        recordId,
+        fields: addOnFields,
+      });
+
+      await refetchEvent();
+      setDirty(false);
+
+      toast.success(
+        "Final details saved."
+      );
+    } catch (error) {
+      console.error(
+        "[Final Details] Save failed:",
+        error,
+        {
+          coreFields,
+          packageFields,
+          addOnFields,
+        }
+      );
+
+      toast.error(
+        error?.message ||
+        "Unable to save final details."
+      );
+    }
+  }
+
+--- AFTER ---
+
+    try {
+      await updateCoreEvent.mutateAsync({
+        recordId,
+        fields: coreFields,
+      });
+
+      await updatePackageDetails.mutateAsync({
+        recordId,
+        fields: packageFields,
+      });
+
+      await updateAddOnDetails.mutateAsync({
+        recordId,
+        fields: addOnFields,
+      });
+
+      await refetchEvent();
+      setDirty(false);
+
+      toast.success(
+        confirming
+          ? "Final details saved and locked."
+          : "Final details saved."
+      );
+
+      return true;
+    } catch (error) {
+      console.error(
+        "[Final Details] Save failed:",
+        error,
+        {
+          coreFields,
+          packageFields,
+          addOnFields,
+        }
+      );
+
+      toast.error(
+        error?.message ||
+        "Unable to save final details."
+      );
+
+      return false;
+    }
+  }
+
+
+------------------------------------------------------------
+7) NEW FUNCTIONS — add immediately after the (now-modified) `save()`
+   function closes, still inside the component.
+------------------------------------------------------------
+
+  function getFinalDetailsPayload() {
+    const includedPackages =
+      formData.servicePackage
+        .map((id) => servicePackageIdToLabel[id])
+        .filter(Boolean)
+        .map(servicePackageDisplayLabel);
+
+    return {
+      recordId: recordId || "",
+      projectName: formData.projectName,
+      eventType: formData.eventType,
+      eventDate: formData.eventDate,
+      ceremonyTime:
+        formData.hasCeremony
+          ? formatTime(formData.ceremonyTime)
+          : "",
+
+      eventLocation: formData.eventLocation,
+      venuePartner:
+        matchedVenueName ||
+        formData.venuePartner,
+
+      eventHostName: formData.eventHostName,
+      contactEmail: formData.contactEmail,
+      contactPhone: formData.contactPhone,
+      secondaryContactName: formData.secondaryContactName,
+      secondaryContactPhone: formData.secondaryContactPhone,
+
+      arrivalSetupTime: formatTime(formData.arrivalSetupTime),
+      barServiceStartTime: formatTime(formData.barServiceStartTime),
+      barServiceCloseTime: formatTime(formData.barServiceCloseTime),
+      cleanUpOutTime: formatTime(formData.cleanUpOutTime),
+
+      totalGuestCount: formData.totalGuestCount,
+      guestsConsumingAlcohol: formData.guestsConsumingAlcohol,
+      bartenderCount: formData.bartenderCount,
+      barbackCount: formData.barbackCount,
+
+      servicePackages: includedPackages,
+      totalPackageAmount: formatCurrencyValue(
+        numberOrNull(formData.totalPackageAmount)
+      ),
+
+      bartenderWillServe: formData.bartenderWillServe,
+      waterResponsibility:
+        formData.waterProvidedByCheers
+          ? "Cheers & Swizzles"
+          : formData.waterResponsibility,
+      additionalServiceDetails: formData.additionalServiceDetails,
+
+      finalDetailsAssigned: formData.finalDetailsAssigned,
+      confirmedAt: new Date().toISOString(),
+    };
+  }
+
+  async function confirmAndLock() {
+    if (finalDetailsAlreadyConfirmed) {
+      return;
+    }
+
+    if (previewMode) {
+      toast.info(
+        "Preview mode only. Open this page with a Beverage Configuration record to confirm and lock."
+      );
+      return;
+    }
+
+    if (!recordId || !updatesEnabled) {
+      toast.error(
+        "One or more Beverage Configuration write groups are not available."
+      );
+      return;
+    }
+
+    if (sessionIssues.length > 0) {
+      toast.error(
+        "Resolve the open items on Read Back before confirming and locking Final Details."
+      );
+      return;
+    }
+
+    setFinalDetailsBusy(true);
+
+    try {
+      const saved = await save({ confirming: true });
+
+      if (!saved) {
+        return;
+      }
+
+      try {
+        const result = await postFinalDetailsWebhook(
+          getFinalDetailsPayload()
+        );
+
+        if (!result.skipped) {
+          toast.success(
+            "Final details email sent."
+          );
+        }
+      } catch (webhookError) {
+        console.error(
+          "[Final Details] Email webhook failed:",
+          webhookError
+        );
+
+        toast.error(
+          "Locked, but the confirmation email failed to send. Use Resend Final Details Email to try again."
+        );
+      }
+    } finally {
+      setFinalDetailsBusy(false);
+    }
+  }
+
+  async function resendFinalDetailsEmail() {
+    setFinalDetailsBusy(true);
+
+    try {
+      const result = await postFinalDetailsWebhook(
+        getFinalDetailsPayload()
+      );
+
+      if (result.skipped) {
+        toast.info(
+          "No email webhook URL is configured yet."
+        );
+      } else {
+        toast.success(
+          "Final details email sent."
+        );
+      }
+    } catch (error) {
+      console.error(
+        "[Final Details] Resend email failed:",
+        error
+      );
+
+      toast.error(
+        error?.message ||
+        "Unable to send the final details email."
+      );
+    } finally {
+      setFinalDetailsBusy(false);
+    }
+  }
+
+
+------------------------------------------------------------
+8) UI — REPLACE the "Finish the session" panel at the bottom of the
+   Review step (STEP 5) with this two-action version.
+------------------------------------------------------------
+
+--- BEFORE ---
+
+                  <div className="flex flex-col gap-3 rounded-[24px] bg-[#191815] p-5 text-white shadow-xl sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="font-semibold">
+                        Finish the session
+                      </p>
+
+                      <p className="mt-1 text-sm text-white/55">
+                        Confirm the Order Review, identify who completed Final Details, then save the handoff.
+                      </p>
+                    </div>
+
+                    <Button
+                      onClick={save}
+                      disabled={
+                        previewMode ||
+                        saving ||
+                        !dirty ||
+                        !updatesEnabled
+                      }
+                      className="bg-[#D7B777] text-[#171612] hover:bg-[#E4C992]"
+                    >
+                      {saving ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      ) : (
+                        <Save className="mr-2 h-4 w-4" />
+                      )}
+
+                      Save Final Details
+                    </Button>
+                  </div>
+
+--- AFTER ---
+
+                  <div className="space-y-3 rounded-[24px] bg-[#191815] p-5 text-white shadow-xl">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="font-semibold">
+                          Finish the session
+                        </p>
+
+                        <p className="mt-1 text-sm text-white/55">
+                          Confirm the Order Review, identify who completed Final Details, then save the handoff.
+                        </p>
+                      </div>
+
+                      <Button
+                        onClick={save}
+                        disabled={
+                          previewMode ||
+                          saving ||
+                          !dirty ||
+                          !updatesEnabled
+                        }
+                        variant="outline"
+                        className="border-white/20 bg-transparent text-white hover:bg-white/10"
+                      >
+                        {saving ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : (
+                          <Save className="mr-2 h-4 w-4" />
+                        )}
+
+                        Save Draft
+                      </Button>
+                    </div>
+
+                    <div className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-sm font-semibold text-[#D7B777]">
+                          Ready to send to the client?
+                        </p>
+
+                        <p className="mt-1 text-xs leading-5 text-white/55">
+                          Confirm & Lock saves everything, locks this page from further edits, and sends the final details email to {formData.contactEmail || "the contact email on file"}. Later changes go through Submit Change Request.
+                        </p>
+
+                        {sessionIssues.length > 0 && (
+                          <p className="mt-2 text-xs font-semibold text-amber-300">
+                            Resolve {sessionIssues.length} open item{sessionIssues.length === 1 ? "" : "s"} above before you can confirm and lock.
+                          </p>
+                        )}
+                      </div>
+
+                      <Button
+                        onClick={confirmAndLock}
+                        disabled={
+                          previewMode ||
+                          finalDetailsBusy ||
+                          saving ||
+                          !updatesEnabled ||
+                          sessionIssues.length > 0
+                        }
+                        className="shrink-0 bg-[#D7B777] text-[#171612] hover:bg-[#E4C992]"
+                      >
+                        {finalDetailsBusy ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : (
+                          <ShieldCheck className="mr-2 h-4 w-4" />
+                        )}
+
+                        Confirm & Lock, Send Email
+                      </Button>
+                    </div>
+                  </div>
+
+(ShieldCheck is already imported at the top of the file, so no import
+changes needed.)
+
+
+------------------------------------------------------------
+9) UI — LOCKED VIEW: add a Change History panel + Resend button.
+   Insert right after the existing helper paragraph below the
+   "Submit Change Request" button, still inside the same wrapping
+   <div> (before its closing tag and the section's closing tag).
+------------------------------------------------------------
+
+--- BEFORE ---
+
+                <p className="mt-3 text-xs text-[#91887D]">
+                  The current Beverage Configuration record ID will be passed to the Change Request page automatically.
+                </p>
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+--- AFTER ---
+
+                <p className="mt-3 text-xs text-[#91887D]">
+                  The current Beverage Configuration record ID will be passed to the Change Request page automatically.
+                </p>
+
+                <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-[#ECE7DF] pt-5">
+                  <div>
+                    <p className="text-sm font-semibold text-[#332E28]">
+                      Need to resend the confirmation email?
+                    </p>
+                    <p className="mt-1 text-xs text-[#81786D]">
+                      Re-sends the current confirmed details to {valueToText(eventRecord?.fields?.contactEmail) || "the contact on file"} without reopening this record.
+                    </p>
+                  </div>
+
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={finalDetailsBusy}
+                    onClick={resendFinalDetailsEmail}
+                  >
+                    {finalDetailsBusy ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <MessageCircle className="mr-2 h-4 w-4" />
+                    )}
+                    Resend Final Details Email
+                  </Button>
+                </div>
+
+                <div className="mt-6 rounded-2xl border border-[#E5E0D7] bg-[#FAF8F4] p-5">
+                  <div className="flex items-center gap-2">
+                    <ListChecks className="h-4 w-4 text-[#A07943]" />
+                    <p className="text-sm font-semibold text-[#332E28]">
+                      Change History
+                    </p>
+                  </div>
+
+                  {valueToText(eventRecord?.fields?.changeLog).trim() ? (
+                    <div className="mt-3 space-y-2">
+                      {valueToText(eventRecord?.fields?.changeLog)
+                        .split("\n")
+                        .map((line) => line.trim())
+                        .filter(Boolean)
+                        .map((line, index) => (
+                          <div
+                            key={index}
+                            className="rounded-xl bg-white px-3 py-2.5 text-sm leading-6 text-[#4F4840]"
+                          >
+                            {line}
+                          </div>
+                        ))}
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-xs text-[#91887D]">
+                      No changes logged yet. Entries submitted through Change Request will appear here.
+                    </p>
+                  )}
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+
+------------------------------------------------------------
+STILL NEEDED FROM YOU
+------------------------------------------------------------
+1. FINAL_DETAILS_WEBHOOK_URL (snippet 1) — the Make/Zapier/n8n webhook
+   URL. Until this is set, Confirm & Lock still saves and locks the
+   record correctly, it just silently skips the email call.
+
+2. Your Change Request page (not shown to me) should APPEND a new
+   line to the same "Change Log" property on this Beverage
+   Configuration record when a change is approved/applied — that's
+   what makes the Change History panel above actually fill in over
+   time. If Change Log is really a separate related database instead
+   of a single text field, tell me and I'll swap snippet 2 for a
+   related-records query instead of a plain text read.
