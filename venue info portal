@@ -1,0 +1,1881 @@
+import { useEffect, useMemo, useState } from "react";
+
+import {
+  datasource,
+  q,
+  useCurrentRecordId,
+  useRecord,
+  useRecordUpdate,
+} from "@/lib/datasource";
+
+import { useCurrentUser } from "@/lib/user";
+import { useNavigationSetting } from "@/lib/editable-settings";
+
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
+
+import { toast } from "sonner";
+
+import {
+  ArrowLeft,
+  ArrowRight,
+  Building2,
+  Save,
+  RefreshCw,
+  MapPin,
+  User,
+  Phone,
+  Mail,
+  Globe,
+  Wine,
+  ShieldCheck,
+  FileText,
+  AlertCircle,
+  CheckCircle2,
+  ClipboardList,
+  Truck,
+  Users,
+  KeyRound,
+  ListChecks,
+  CalendarDays,
+} from "lucide-react";
+
+/* =========================================================
+   READ MAPPING
+========================================================= */
+
+const venueSelect = q.select({
+  venueName: "Name",
+  notes: "Notes",
+  venueAddress: "Address",
+  website: "Website",
+  floorplan: "Floorplan",
+  igHandle: "IG Handle",
+  venueType: "Venue Type",
+  decorRules: "Decor Rules",
+  kitchenType: "Kitchen Type",
+  salesRegion: "Sales Region",
+  waterAccess: "Water Access",
+  filesMedia: "Files & media",
+  shotsAllowed: "Shots Allowed",
+  indoorOutdoor: "Indoor/Outdoor",
+  accountManager: "Account Manager",
+  alcoholAllowed: "Alcohol Allowed",
+  stageAvailable: "Stage Available",
+  setupStartTime: "Set Up Start Time",
+  approvedCaterers: "Approved Caterers",
+  musicCutoffTime: "Music Cutoff Time",
+  securityRequired: "Security Required",
+  teardownDeadline: "Teardown Deadline",
+  barSetupProvided: "Bar Setup Provided",
+  minSecurityStaff: "Min Security Staff",
+  onsiteStaffNotes: "Onsite Staff Notes",
+  powerAccessNotes: "Power Access Notes",
+  soundRestrictions: "Sound Restrictions",
+  maxCapacitySeated: "Max Capacity Seated",
+  loadInInstructions: "Load-In Instructions",
+  trashResponsibility: "Trash Responsibility",
+  vendorParkingNotes: "Vendor Parking Notes",
+  alcoholTypesAllowed: "Alcohol Types Allowed",
+  iceMachine: "Ice Machine Available",
+  loadOutInstructions: "Load-Out Instructions",
+  maxCapacityStanding: "Max Capacity Standing",
+  review2025Completed: "2025 Review Completed?",
+  insuranceRequirements: "Insurance Requirements",
+  quickbooksCustomerID: "Quickbooks Customer ID",
+  venueCoordinatorName: "Venue Coordinator Name",
+  minBartenders: "Min Bartenders Required",
+  venueCoordinatorEmail: "Venue Coordinator Email",
+  candleOpenFlamePolicy: "Candle/Open Flame Policy",
+  outsideCateringAllowed: "Outside Catering Allowed",
+  serveTimeAllowed: "Serve Time Limit (Hours)",
+  signatureCocktailLimit: "Signature Cocktail Limit",
+  venuePortalLoginEmail: "Venue Portal Login Email",
+  venueSalesPhoneNumber: "Venue Sales Phone Number",
+  additionalInsuredRequired: "Additional Insured Required",
+  venueEmergencyContactName: "Venue Emergency Contact Name",
+  vendorInsuranceRequirements: "Vendor Insurance Requirements",
+  venueEmergencyContactPhone: "Venue Emergency Contact Phone",
+  venueCoordinatorPhoneNumber: "Venue Coordinator Phone Number",
+  pageContent: "Page Content",
+});
+
+/* =========================================================
+   DATASOURCE
+========================================================= */
+
+const ds = datasource.define({
+  venueList: "c7456067-572a-4500-9cf6-e471578723d8",
+});
+
+/* =========================================================
+   UPDATE MAPPING
+========================================================= */
+
+const venueUpdateFields = q.select({
+  venueName: "Name",
+  notes: "Notes",
+  venueAddress: "Address",
+  website: "Website",
+  floorplan: "Floorplan",
+  igHandle: "IG Handle",
+  decorRules: "Decor Rules",
+  kitchenType: "Kitchen Type",
+  waterAccess: "Water Access",
+  indoorOutdoor: "Indoor/Outdoor",
+  alcoholAllowed: "Alcohol Allowed",
+  stageAvailable: "Stage Available",
+  setupStartTime: "Set Up Start Time",
+  approvedCaterers: "Approved Caterers",
+  musicCutoffTime: "Music Cutoff Time",
+  securityRequired: "Security Required",
+  teardownDeadline: "Teardown Deadline",
+  minSecurityStaff: "Min Security Staff",
+  onsiteStaffNotes: "Onsite Staff Notes",
+  powerAccessNotes: "Power Access Notes",
+  soundRestrictions: "Sound Restrictions",
+  maxCapacitySeated: "Max Capacity Seated",
+  loadInInstructions: "Load-In Instructions",
+  trashResponsibility: "Trash Responsibility",
+  vendorParkingNotes: "Vendor Parking Notes",
+  loadOutInstructions: "Load-Out Instructions",
+  maxCapacityStanding: "Max Capacity Standing",
+  insuranceRequirements: "Insurance Requirements",
+  quickbooksCustomerID: "Quickbooks Customer ID",
+  venueCoordinatorName: "Venue Coordinator Name",
+  venueCoordinatorEmail: "Venue Coordinator Email",
+  candleOpenFlamePolicy: "Candle/Open Flame Policy",
+  serveTimeAllowed: "Serve Time Limit (Hours)",
+  signatureCocktailLimit: "Signature Cocktail Limit",
+  venuePortalLoginEmail: "Venue Portal Login Email",
+  venueSalesPhoneNumber: "Venue Sales Phone Number",
+  additionalInsuredRequired: "Additional Insured Required",
+  venueEmergencyContactName: "Venue Emergency Contact Name",
+  vendorInsuranceRequirements: "Vendor Insurance Requirements",
+  venueEmergencyContactPhone: "Venue Emergency Contact Phone",
+  venueCoordinatorPhoneNumber: "Venue Coordinator Phone Number",
+});
+
+/* =========================================================
+   HELPERS
+========================================================= */
+
+function toText(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number") return String(value);
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+
+  if (Array.isArray(value)) {
+    return value.map((item) => toText(item)).filter(Boolean).join(", ");
+  }
+
+  if (typeof value === "object") {
+    if (value.label) return String(value.label);
+    if (value.name) return String(value.name);
+    if (value.title) return String(value.title);
+    if (value.value !== undefined) return toText(value.value);
+    if (value.url) return String(value.url);
+    if (value.filename) return String(value.filename);
+  }
+
+  return "";
+}
+
+function toBoolean(value) {
+  if (value === true) return true;
+  if (value === false) return false;
+
+  const text = toText(value).trim().toLowerCase();
+  if (!text) return false;
+
+  return !["no", "false", "0", "none", "n/a", "not applicable"].includes(text);
+}
+
+function toNumberInput(value) {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "number") return String(value);
+
+  const parsed = Number(toText(value));
+  return Number.isNaN(parsed) ? "" : String(parsed);
+}
+
+function numberOrNull(value) {
+  if (value === "" || value === null || value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function appendQuery(destination, params) {
+  const separator = destination.includes("?") ? "&" : "?";
+  return `${destination}${separator}${params.toString()}`;
+}
+
+function getRecordIdFromUrl() {
+  if (typeof window === "undefined") return "";
+
+  const params = new URLSearchParams(window.location.search);
+
+  return String(
+    params.get("recordId") ||
+    params.get("venueRecordId") ||
+    params.get("id") ||
+    ""
+  ).trim();
+}
+
+function normalizedEmail(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase();
+}
+
+function navigateWithVenueContext(navigation, fallbackDestination, recordId, venueName) {
+  if (!recordId) {
+    toast.error("This venue does not have a record ID.");
+    return;
+  }
+
+  const destination =
+    navigation?.destination ||
+    fallbackDestination;
+
+  const params = new URLSearchParams();
+
+  /*
+   * Pass both names so downstream pages can use either convention.
+   * recordId = general detail-page convention
+   * venueRecordId = explicit venue foreign-key convention
+   */
+  params.set("recordId", String(recordId));
+  params.set("venueRecordId", String(recordId));
+
+  if (venueName) {
+    params.set("venueName", venueName);
+  }
+
+  const nextUrl = appendQuery(destination, params);
+
+  if (navigation?.openIn === "TAB") {
+    window.open(nextUrl, "_blank");
+  } else {
+    window.location.assign(nextUrl);
+  }
+}
+
+/* =========================================================
+   SMALL UI
+========================================================= */
+
+function StatusPill({ value, positiveText = "Yes", negativeText = "No" }) {
+  const enabled = toBoolean(value);
+
+  return (
+    <span
+      className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${
+        enabled
+          ? "bg-emerald-50 text-emerald-700"
+          : "bg-slate-100 text-slate-500"
+      }`}
+    >
+      {enabled ? positiveText : negativeText}
+    </span>
+  );
+}
+
+function SnapshotCard({ icon: Icon, label, value, helper }) {
+  return (
+    <div className="rounded-2xl border border-[#E8E5DE] bg-white p-4">
+      <div className="flex items-start gap-3">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#F3F1EB]">
+          <Icon className="h-4 w-4 text-[#6F6455]" />
+        </div>
+
+        <div className="min-w-0">
+          <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#8A8175]">
+            {label}
+          </p>
+
+          <p className="mt-1 break-words text-sm font-semibold text-[#1D1B18]">
+            {value || "Not set"}
+          </p>
+
+          {helper && (
+            <p className="mt-1 text-xs leading-5 text-[#8A8175]">
+              {helper}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MiniFact({ label, value }) {
+  return (
+    <div className="flex items-center justify-between gap-4 border-b border-[#EEEAE2] py-3 last:border-0">
+      <span className="text-sm text-[#746B5F]">{label}</span>
+      <span className="max-w-[55%] text-right text-sm font-semibold text-[#201D19]">
+        {value || "Not set"}
+      </span>
+    </div>
+  );
+}
+
+function FormField({ label, description, children, className = "" }) {
+  return (
+    <div className={className}>
+      <Label className="mb-2 block text-[11px] font-bold uppercase tracking-[0.1em] text-[#736A5E]">
+        {label}
+      </Label>
+
+      {children}
+
+      {description && (
+        <p className="mt-1.5 text-xs leading-5 text-[#968D81]">{description}</p>
+      )}
+    </div>
+  );
+}
+
+function ToggleField({ label, description, checked, onCheckedChange }) {
+  return (
+    <div className="flex items-center justify-between gap-4 rounded-xl border border-[#E7E2D8] bg-[#FFFEFB] p-4">
+      <div>
+        <p className="text-sm font-semibold text-[#25211C]">{label}</p>
+        {description && (
+          <p className="mt-1 text-xs leading-5 text-[#7F766A]">{description}</p>
+        )}
+      </div>
+
+      <Switch checked={checked} onCheckedChange={onCheckedChange} />
+    </div>
+  );
+}
+
+function ReadOnlyField({ label, value }) {
+  const display = toText(value);
+
+  return (
+    <div className="rounded-xl border border-[#E7E2D8] bg-[#F8F6F1] p-4">
+      <p className="text-[10px] font-bold uppercase tracking-[0.11em] text-[#8D8478]">
+        {label}
+      </p>
+
+      <p className="mt-1 whitespace-pre-wrap break-words text-sm text-[#2B2722]">
+        {display || "Not set"}
+      </p>
+    </div>
+  );
+}
+
+function WorkspaceSection({ icon: Icon, eyebrow, title, description, children }) {
+  return (
+    <section className="overflow-hidden rounded-[24px] border border-[#E5E1D8] bg-white shadow-sm">
+      <div className="border-b border-[#EEEAE3] px-5 py-5 sm:px-7">
+        <div className="flex items-start gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#F2EFE8]">
+            <Icon className="h-5 w-5 text-[#7B6647]" />
+          </div>
+
+          <div>
+            {eyebrow && (
+              <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#A07943]">
+                {eyebrow}
+              </p>
+            )}
+
+            <h2 className="mt-1 text-xl font-semibold tracking-[-0.01em] text-[#1B1916] sm:text-2xl">
+              {title}
+            </h2>
+
+            {description && (
+              <p className="mt-1 max-w-3xl text-sm leading-6 text-[#766D61]">
+                {description}
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="p-5 sm:p-7">{children}</div>
+    </section>
+  );
+}
+
+function SectionTab({ active, icon: Icon, label, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex shrink-0 items-center gap-2 rounded-full px-3.5 py-2 text-sm font-semibold transition ${
+        active
+          ? "bg-[#1B1A17] text-white"
+          : "bg-white text-[#6E665C] hover:bg-[#F1EEE7]"
+      }`}
+    >
+      <Icon className="h-4 w-4" />
+      {label}
+    </button>
+  );
+}
+
+/* =========================================================
+   MAIN BLOCK
+========================================================= */
+
+export default function Block() {
+  const user = useCurrentUser();
+
+  /*
+   * URL record ID support:
+   * - ?recordId=
+   * - ?venueRecordId=
+   * - ?id=
+   *
+   * The URL value wins. useCurrentRecordId() remains as a fallback
+   * when Softr supplies record context directly.
+   */
+  const currentRecordId = useCurrentRecordId();
+  const urlRecordId = getRecordIdFromUrl();
+
+  const recordId =
+    urlRecordId ||
+    String(currentRecordId || "").trim();
+
+  const {
+    data: venue,
+    status: venueStatus,
+    error: venueError,
+    refetch,
+    isRefetching,
+  } = useRecord({
+    from: ds.venueList,
+    select: venueSelect,
+    recordId,
+  });
+
+  const preferredVendorNavigation = useNavigationSetting({
+    name: "preferred-vendor-list-page",
+    label: "Preferred Vendor List Page",
+    initialValue: {
+      action: "OPEN_PAGE",
+      destination: "/venue-vendor-lists",
+      openIn: "SELF",
+    },
+  });
+
+  const venueEventsNavigation = useNavigationSetting({
+    name: "venue-event-list-page",
+    label: "Venue Event List Page",
+    initialValue: {
+      action: "OPEN_PAGE",
+      destination: "/venue-event-list",
+      openIn: "SELF",
+    },
+  });
+
+  const [activeSection, setActiveSection] = useState("overview");
+  const [loadedRecordId, setLoadedRecordId] = useState(null);
+
+  const [formData, setFormData] = useState({
+    venueName: "",
+    venueAddress: "",
+    website: "",
+    floorplan: "",
+    igHandle: "",
+    decorRules: "",
+    kitchenType: "",
+    indoorOutdoor: "",
+    stageAvailable: "",
+    setupStartTime: "",
+    approvedCaterers: "",
+    musicCutoffTime: "",
+    securityRequired: "",
+    teardownDeadline: "",
+    minSecurityStaff: "",
+    onsiteStaffNotes: "",
+    powerAccessNotes: "",
+    soundRestrictions: "",
+    maxCapacitySeated: "",
+    loadInInstructions: "",
+    trashResponsibility: "",
+    vendorParkingNotes: "",
+    loadOutInstructions: "",
+    maxCapacityStanding: "",
+    insuranceRequirements: "",
+    quickbooksCustomerID: "",
+    venueCoordinatorName: "",
+    venueCoordinatorEmail: "",
+    venueCoordinatorPhoneNumber: "",
+    candleOpenFlamePolicy: "",
+    serveTimeAllowed: "",
+    signatureCocktailLimit: "",
+    venuePortalLoginEmail: "",
+    venueSalesPhoneNumber: "",
+    additionalInsuredRequired: "",
+    venueEmergencyContactName: "",
+    vendorInsuranceRequirements: "",
+    venueEmergencyContactPhone: "",
+    waterAccess: false,
+    alcoholAllowed: false,
+    notes: "",
+  });
+
+  const [dirty, setDirty] = useState(false);
+
+  const updateVenue = useRecordUpdate({
+    from: ds.venueList,
+    fields: venueUpdateFields,
+    onSuccess: async () => {
+      await refetch();
+      setDirty(false);
+      toast.success("Venue updated.");
+    },
+    onError: (error) => {
+      toast.error(error?.message || "Unable to update venue.");
+    },
+  });
+
+  useEffect(() => {
+    if (!venue || !recordId) return;
+    if (loadedRecordId === recordId) return;
+
+    const f = venue.fields || {};
+
+    setFormData({
+      venueName: toText(f.venueName),
+      venueAddress: toText(f.venueAddress),
+      website: toText(f.website),
+      floorplan: toText(f.floorplan),
+      igHandle: toText(f.igHandle),
+      decorRules: toText(f.decorRules),
+      kitchenType: toText(f.kitchenType),
+      indoorOutdoor: toText(f.indoorOutdoor),
+      stageAvailable: toText(f.stageAvailable),
+      setupStartTime: toText(f.setupStartTime),
+      approvedCaterers: toText(f.approvedCaterers),
+      musicCutoffTime: toText(f.musicCutoffTime),
+      securityRequired: toText(f.securityRequired),
+      teardownDeadline: toText(f.teardownDeadline),
+      minSecurityStaff: toText(f.minSecurityStaff),
+      onsiteStaffNotes: toText(f.onsiteStaffNotes),
+      powerAccessNotes: toText(f.powerAccessNotes),
+      soundRestrictions: toText(f.soundRestrictions),
+      maxCapacitySeated: toText(f.maxCapacitySeated),
+      loadInInstructions: toText(f.loadInInstructions),
+      trashResponsibility: toText(f.trashResponsibility),
+      vendorParkingNotes: toText(f.vendorParkingNotes),
+      loadOutInstructions: toText(f.loadOutInstructions),
+      maxCapacityStanding: toText(f.maxCapacityStanding),
+      insuranceRequirements: toText(f.insuranceRequirements),
+      quickbooksCustomerID: toText(f.quickbooksCustomerID),
+      venueCoordinatorName: toText(f.venueCoordinatorName),
+      venueCoordinatorEmail: toText(f.venueCoordinatorEmail),
+      venueCoordinatorPhoneNumber: toText(f.venueCoordinatorPhoneNumber),
+      candleOpenFlamePolicy: toText(f.candleOpenFlamePolicy),
+      serveTimeAllowed: toNumberInput(f.serveTimeAllowed),
+      signatureCocktailLimit: toText(f.signatureCocktailLimit),
+      venuePortalLoginEmail: toText(f.venuePortalLoginEmail),
+      venueSalesPhoneNumber: toText(f.venueSalesPhoneNumber),
+      additionalInsuredRequired: toText(f.additionalInsuredRequired),
+      venueEmergencyContactName: toText(f.venueEmergencyContactName),
+      vendorInsuranceRequirements: toText(f.vendorInsuranceRequirements),
+      venueEmergencyContactPhone: toText(f.venueEmergencyContactPhone),
+      waterAccess: toBoolean(f.waterAccess),
+      alcoholAllowed: toBoolean(f.alcoholAllowed),
+      notes: toText(f.notes),
+    });
+
+    setLoadedRecordId(recordId);
+    setDirty(false);
+  }, [venue, recordId, loadedRecordId]);
+
+  function change(field, value) {
+    setFormData((current) => ({ ...current, [field]: value }));
+    setDirty(true);
+  }
+
+  async function handleSave() {
+    if (!recordId) {
+      toast.error("No venue record ID was provided.");
+      return;
+    }
+
+    if (!updateVenue.enabled) {
+      toast.error("Your account does not have permission to update this venue.");
+      return;
+    }
+
+    try {
+      const venueStaffEditing =
+        normalizedEmail(user?.email) ===
+        normalizedEmail(venue?.fields?.venuePortalLoginEmail);
+
+      const fields = {
+        venueName: formData.venueName.trim(),
+        venueAddress: formData.venueAddress.trim(),
+        website: formData.website.trim(),
+        floorplan: formData.floorplan.trim(),
+        igHandle: formData.igHandle.trim(),
+        decorRules: formData.decorRules.trim(),
+        kitchenType: formData.kitchenType.trim(),
+        indoorOutdoor: formData.indoorOutdoor.trim(),
+        alcoholAllowed: formData.alcoholAllowed,
+        stageAvailable: formData.stageAvailable.trim(),
+        setupStartTime: formData.setupStartTime.trim(),
+        approvedCaterers: formData.approvedCaterers.trim(),
+        musicCutoffTime: formData.musicCutoffTime.trim(),
+        securityRequired: formData.securityRequired.trim(),
+        teardownDeadline: formData.teardownDeadline.trim(),
+        minSecurityStaff: formData.minSecurityStaff.trim(),
+        onsiteStaffNotes: formData.onsiteStaffNotes.trim(),
+        powerAccessNotes: formData.powerAccessNotes.trim(),
+        soundRestrictions: formData.soundRestrictions.trim(),
+        maxCapacitySeated: formData.maxCapacitySeated.trim(),
+        loadInInstructions: formData.loadInInstructions.trim(),
+        trashResponsibility: formData.trashResponsibility.trim(),
+        vendorParkingNotes: formData.vendorParkingNotes.trim(),
+        loadOutInstructions: formData.loadOutInstructions.trim(),
+        maxCapacityStanding: formData.maxCapacityStanding.trim(),
+        insuranceRequirements: formData.insuranceRequirements.trim(),
+        quickbooksCustomerID: formData.quickbooksCustomerID.trim(),
+        venueCoordinatorName: formData.venueCoordinatorName.trim(),
+        venueCoordinatorEmail: formData.venueCoordinatorEmail.trim(),
+        venueCoordinatorPhoneNumber: formData.venueCoordinatorPhoneNumber.trim(),
+        candleOpenFlamePolicy: formData.candleOpenFlamePolicy.trim(),
+        serveTimeAllowed: numberOrNull(formData.serveTimeAllowed),
+        signatureCocktailLimit: formData.signatureCocktailLimit.trim(),
+        ...(venueStaffEditing
+          ? {}
+          : {
+              venuePortalLoginEmail:
+                formData.venuePortalLoginEmail.trim(),
+            }),
+        venueSalesPhoneNumber: formData.venueSalesPhoneNumber.trim(),
+        additionalInsuredRequired: formData.additionalInsuredRequired.trim(),
+        venueEmergencyContactName: formData.venueEmergencyContactName.trim(),
+        vendorInsuranceRequirements: formData.vendorInsuranceRequirements.trim(),
+        venueEmergencyContactPhone: formData.venueEmergencyContactPhone.trim(),
+        waterAccess: formData.waterAccess,
+        notes: formData.notes,
+      };
+
+      await updateVenue.mutateAsync({ recordId, fields });
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Unable to save venue."
+      );
+    }
+  }
+
+  function openPreferredVendorLists() {
+    navigateWithVenueContext(
+      preferredVendorNavigation,
+      "/venue-vendor-lists",
+      recordId,
+      formData.venueName
+    );
+  }
+
+  function openVenueEvents() {
+    navigateWithVenueContext(
+      venueEventsNavigation,
+      "/venue-event-list",
+      recordId,
+      formData.venueName
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-[520px] bg-[#F6F4EE] py-14">
+        <div className="container">
+          <div className="content">
+            <div className="mx-auto max-w-lg rounded-[24px] border border-[#E4DFD3] bg-white p-10 text-center shadow-sm">
+              <Building2 className="mx-auto h-9 w-9 text-[#9A7A49]" />
+              <h2 className="mt-5 text-2xl font-semibold text-[#1F1D19]">
+                Venue Workspace
+              </h2>
+              <p className="mt-2 text-sm leading-6 text-[#756D62]">
+                Please log in to view and manage this venue.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!recordId) {
+    return (
+      <div className="min-h-[520px] bg-[#F6F4EE] py-14">
+        <div className="container">
+          <div className="content">
+            <div className="mx-auto max-w-lg rounded-[24px] border border-amber-200 bg-white p-8 text-center shadow-sm">
+              <AlertCircle className="mx-auto h-8 w-8 text-amber-700" />
+              <h2 className="mt-4 text-xl font-semibold text-[#1F1D19]">
+                No venue selected
+              </h2>
+              <p className="mt-2 text-sm leading-6 text-[#756D62]">
+                This page needs the venue record ID from the previous venue list. Open it using a URL such as <strong>?recordId=YOUR_RECORD_ID</strong>.
+              </p>
+              <Button
+                variant="outline"
+                className="mt-5"
+                onClick={() => window.history.back()}
+              >
+                <ArrowLeft className="mr-2 h-4 w-4" />
+                Back to Venues
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (venueStatus === "pending") {
+    return (
+      <div className="min-h-[520px] bg-[#F6F4EE] py-14">
+        <div className="container">
+          <div className="content">
+            <div className="mx-auto max-w-lg rounded-[24px] border border-[#E4DFD3] bg-white p-12 text-center shadow-sm">
+              <RefreshCw className="mx-auto h-6 w-6 animate-spin text-[#9A7A49]" />
+              <p className="mt-3 text-sm font-medium text-[#6D6458]">
+                Opening venue workspace...
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (venueStatus === "error") {
+    return (
+      <div className="min-h-[520px] bg-[#F6F4EE] py-14">
+        <div className="container">
+          <div className="content">
+            <div className="mx-auto max-w-lg rounded-[24px] border border-red-200 bg-white p-8 shadow-sm">
+              <AlertCircle className="h-7 w-7 text-red-700" />
+              <h2 className="mt-4 text-xl font-semibold text-red-900">
+                Unable to load venue
+              </h2>
+              <p className="mt-2 text-sm leading-6 text-red-700">
+                {venueError?.message || "Check the venue datasource and record ID."}
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!venue) {
+    return (
+      <div className="min-h-[520px] bg-[#F6F4EE] py-14">
+        <div className="container">
+          <div className="content">
+            <div className="mx-auto max-w-lg rounded-[24px] border border-[#E4DFD3] bg-white p-8 text-center">
+              Venue record not found.
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const original = venue.fields || {};
+  const saving = updateVenue.status === "pending";
+
+  /*
+   * If the logged-in email is the Venue Portal Login Email, render
+   * the page as the venue-facing workspace. Otherwise it is treated
+   * as back-office context. Both can edit venue operating details.
+   *
+   * Portal access email remains editable only for back-office users
+   * so venue staff cannot accidentally lock themselves out.
+   */
+  const loggedInEmail = normalizedEmail(user?.email);
+  const venuePortalEmail = normalizedEmail(original.venuePortalLoginEmail);
+
+  const isVenueStaff =
+    Boolean(loggedInEmail) &&
+    Boolean(venuePortalEmail) &&
+    loggedInEmail === venuePortalEmail;
+
+  const workspaceLabel = isVenueStaff
+    ? "Venue Partner Workspace"
+    : "CRUE Venue Workspace";
+
+  const capacityLabel =
+    formData.maxCapacitySeated || formData.maxCapacityStanding
+      ? [
+          formData.maxCapacitySeated
+            ? `${formData.maxCapacitySeated} seated`
+            : "",
+          formData.maxCapacityStanding
+            ? `${formData.maxCapacityStanding} standing`
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      : "Not set";
+
+  const profileChecks = [
+    formData.venueName,
+    formData.venueAddress,
+    formData.website,
+    formData.venueCoordinatorName,
+    formData.venueCoordinatorEmail,
+    formData.maxCapacitySeated || formData.maxCapacityStanding,
+    formData.loadInInstructions,
+    formData.insuranceRequirements ||
+      formData.vendorInsuranceRequirements,
+    formData.notes,
+  ];
+
+  const profileCompletedCount =
+    profileChecks.filter((item) =>
+      Boolean(String(item || "").trim())
+    ).length;
+
+  const profileCompletion = Math.round(
+    (profileCompletedCount /
+      profileChecks.length) *
+      100
+  );
+
+  const sectionTabs = [
+    { id: "overview", label: "Overview", icon: Building2 },
+    { id: "basics", label: "Basics", icon: MapPin },
+    { id: "contacts", label: "Contacts", icon: User },
+    { id: "operations", label: "Operations", icon: Truck },
+    { id: "bar", label: "Bar", icon: Wine },
+    { id: "policies", label: "Policies", icon: ShieldCheck },
+    { id: "notes", label: "Notes", icon: FileText },
+  ];
+
+  return (
+    <div className="min-h-screen bg-[#F6F4EE] text-[#1E1B17]">
+      <div className="container py-5 sm:py-8">
+        <div className="content mx-auto max-w-7xl">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <Button
+              variant="ghost"
+              onClick={() => window.history.back()}
+              className="text-[#665E53]"
+            >
+              <ArrowLeft className="mr-2 h-4 w-4" />
+              Venue Directory
+            </Button>
+
+            <div className="flex items-center gap-2">
+              {dirty ? (
+                <Badge
+                  variant="outline"
+                  className="border-amber-300 bg-amber-50 text-amber-800"
+                >
+                  Unsaved changes
+                </Badge>
+              ) : (
+                <Badge
+                  variant="outline"
+                  className="border-emerald-200 bg-emerald-50 text-emerald-800"
+                >
+                  <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
+                  Up to date
+                </Badge>
+              )}
+
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isRefetching}
+                onClick={() => refetch()}
+              >
+                <RefreshCw
+                  className={`mr-2 h-4 w-4 ${
+                    isRefetching ? "animate-spin" : ""
+                  }`}
+                />
+                Refresh
+              </Button>
+            </div>
+          </div>
+
+          <section className="overflow-hidden rounded-[28px] bg-[#171714] text-white shadow-lg">
+            <div className="p-6 sm:p-8 lg:p-10">
+              <div className="flex flex-col gap-7 lg:flex-row lg:items-end lg:justify-between">
+                <div className="max-w-3xl">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#D5B77F]">
+                    {workspaceLabel}
+                  </p>
+
+                  <h1 className="mt-2 text-3xl font-semibold tracking-[-0.03em] sm:text-4xl lg:text-5xl">
+                    {formData.venueName || "Venue Overview"}
+                  </h1>
+
+                  <div className="mt-4 flex flex-wrap items-center gap-2 text-sm text-white/65">
+                    <Badge className="border-0 bg-white/10 text-white hover:bg-white/10">
+                      {isVenueStaff ? "Venue Staff" : "Back Office"}
+                    </Badge>
+
+                    {formData.venueAddress && (
+                      <span className="inline-flex items-center gap-1.5">
+                        <MapPin className="h-4 w-4" />
+                        {formData.venueAddress}
+                      </span>
+                    )}
+
+                    {toText(original.venueType) && (
+                      <Badge className="border-0 bg-white/10 text-white hover:bg-white/10">
+                        {toText(original.venueType)}
+                      </Badge>
+                    )}
+
+                    {toText(original.salesRegion) && (
+                      <Badge className="border-0 bg-white/10 text-white hover:bg-white/10">
+                        {toText(original.salesRegion)}
+                      </Badge>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Button
+                    type="button"
+                    onClick={openPreferredVendorLists}
+                    className="h-11 bg-white text-[#171714] hover:bg-[#EEEAE2]"
+                  >
+                    <ListChecks className="mr-2 h-4 w-4" />
+                    Preferred Vendors
+                    <ArrowRight className="ml-2 h-4 w-4" />
+                  </Button>
+
+                  <Button
+                    type="button"
+                    onClick={openVenueEvents}
+                    className="h-11 border border-white/20 bg-white/10 text-white hover:bg-white/20"
+                  >
+                    <CalendarDays className="mr-2 h-4 w-4" />
+                    Venue Events
+                    <ArrowRight className="ml-2 h-4 w-4" />
+                  </Button>
+
+                  <Button
+                    type="button"
+                    onClick={handleSave}
+                    disabled={saving || !dirty || !updateVenue.enabled}
+                    className="h-11 bg-[#D6B372] text-[#171714] hover:bg-[#E2C58F]"
+                  >
+                    {saving ? (
+                      <>
+                        <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                        Saving
+                      </>
+                    ) : (
+                      <>
+                        <Save className="mr-2 h-4 w-4" />
+                        Save Changes
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </div>
+
+              {!updateVenue.enabled && (
+                <div className="mt-6 rounded-xl border border-red-300/20 bg-red-500/10 p-3 text-sm text-red-100">
+                  Your current Softr permissions allow you to view this venue but not update it.
+                </div>
+              )}
+            </div>
+
+            <div className="h-1.5 bg-[#B98A46]" />
+          </section>
+
+          <section className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <SnapshotCard icon={Users} label="Capacity" value={capacityLabel} />
+
+            <SnapshotCard
+              icon={User}
+              label="Primary Contact"
+              value={formData.venueCoordinatorName || "Not set"}
+              helper={
+                formData.venueCoordinatorEmail ||
+                formData.venueCoordinatorPhoneNumber ||
+                "Add a coordinator"
+              }
+            />
+
+            <SnapshotCard
+              icon={Wine}
+              label="Alcohol"
+              value={formData.alcoholAllowed ? "Allowed" : "Not confirmed"}
+              helper={toText(original.alcoholTypesAllowed)}
+            />
+
+            <SnapshotCard
+              icon={CheckCircle2}
+              label="Venue Profile"
+              value={`${profileCompletion}% complete`}
+              helper="Enough information to make event handoffs easier"
+            />
+          </section>
+
+          <div className="sticky top-0 z-20 -mx-2 mt-5 overflow-x-auto border-y border-[#E8E4DC] bg-[#F6F4EE]/95 px-2 py-3 backdrop-blur">
+            <div className="flex min-w-max gap-2">
+              {sectionTabs.map((tab) => (
+                <SectionTab
+                  key={tab.id}
+                  active={activeSection === tab.id}
+                  icon={tab.icon}
+                  label={tab.label}
+                  onClick={() => setActiveSection(tab.id)}
+                />
+              ))}
+            </div>
+          </div>
+
+          <div className="mt-5">
+            {activeSection === "overview" && (
+              <div className="space-y-5">
+                <div className="grid gap-5 lg:grid-cols-[1.1fr_.9fr]">
+                  <WorkspaceSection
+                    icon={Building2}
+                    eyebrow="Venue Snapshot"
+                    title="What someone needs to know first"
+                    description="The most useful venue information without making the team dig through every field."
+                  >
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <ReadOnlyField label="Venue Type" value={original.venueType} />
+                      <ReadOnlyField
+                        label="Indoor / Outdoor"
+                        value={formData.indoorOutdoor}
+                      />
+                      <ReadOnlyField label="Sales Region" value={original.salesRegion} />
+                      <ReadOnlyField
+                        label="Account Manager"
+                        value={original.accountManager}
+                      />
+                    </div>
+
+                    <div className="mt-5 divide-y divide-[#EEEAE2] rounded-2xl border border-[#E8E4DC] px-4">
+                      <MiniFact label="Setup starts" value={formData.setupStartTime} />
+                      <MiniFact
+                        label="Music cutoff"
+                        value={formData.musicCutoffTime}
+                      />
+                      <MiniFact
+                        label="Teardown deadline"
+                        value={formData.teardownDeadline}
+                      />
+                      <MiniFact
+                        label="Outside catering"
+                        value={toText(original.outsideCateringAllowed)}
+                      />
+                    </div>
+                  </WorkspaceSection>
+
+                  <WorkspaceSection
+                    icon={User}
+                    eyebrow="People"
+                    title="Who should we contact?"
+                    description="Primary and emergency contacts for the venue."
+                  >
+                    <div className="space-y-3">
+                      <div className="rounded-2xl border border-[#E8E4DC] bg-[#FBFAF6] p-4">
+                        <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#8A8175]">
+                          Coordinator
+                        </p>
+
+                        <p className="mt-2 text-base font-semibold text-[#1E1B17]">
+                          {formData.venueCoordinatorName || "Not set"}
+                        </p>
+
+                        {formData.venueCoordinatorEmail && (
+                          <a
+                            href={`mailto:${formData.venueCoordinatorEmail}`}
+                            className="mt-2 flex items-center gap-2 text-sm text-[#6F6455] hover:underline"
+                          >
+                            <Mail className="h-4 w-4" />
+                            {formData.venueCoordinatorEmail}
+                          </a>
+                        )}
+
+                        {formData.venueCoordinatorPhoneNumber && (
+                          <a
+                            href={`tel:${formData.venueCoordinatorPhoneNumber}`}
+                            className="mt-2 flex items-center gap-2 text-sm text-[#6F6455] hover:underline"
+                          >
+                            <Phone className="h-4 w-4" />
+                            {formData.venueCoordinatorPhoneNumber}
+                          </a>
+                        )}
+                      </div>
+
+                      <div className="rounded-2xl border border-[#E8E4DC] bg-white p-4">
+                        <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#8A8175]">
+                          Emergency
+                        </p>
+
+                        <p className="mt-2 text-sm font-semibold text-[#1E1B17]">
+                          {formData.venueEmergencyContactName || "Not set"}
+                        </p>
+
+                        {formData.venueEmergencyContactPhone && (
+                          <p className="mt-1 text-sm text-[#6F6455]">
+                            {formData.venueEmergencyContactPhone}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </WorkspaceSection>
+                </div>
+
+                <WorkspaceSection
+                  icon={ClipboardList}
+                  eyebrow="Quick Read"
+                  title="Operating flags"
+                  description="High-value facts an event team can scan in a few seconds."
+                >
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <div className="rounded-xl border border-[#E8E4DC] p-4">
+                      <p className="text-xs text-[#766D61]">Alcohol allowed</p>
+                      <div className="mt-2">
+                        <StatusPill value={formData.alcoholAllowed} />
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-[#E8E4DC] p-4">
+                      <p className="text-xs text-[#766D61]">Water access</p>
+                      <div className="mt-2">
+                        <StatusPill value={formData.waterAccess} />
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-[#E8E4DC] p-4">
+                      <p className="text-xs text-[#766D61]">Ice machine</p>
+                      <p className="mt-2 text-sm font-semibold text-[#211E1A]">
+                        {toText(original.iceMachine) || "Not set"}
+                      </p>
+                    </div>
+
+                    <div className="rounded-xl border border-[#E8E4DC] p-4">
+                      <p className="text-xs text-[#766D61]">Bar setup</p>
+                      <p className="mt-2 text-sm font-semibold text-[#211E1A]">
+                        {toText(original.barSetupProvided) || "Not set"}
+                      </p>
+                    </div>
+
+                    <div className="rounded-xl border border-[#E8E4DC] p-4">
+                      <p className="text-xs text-[#766D61]">Security</p>
+                      <p className="mt-2 text-sm font-semibold text-[#211E1A]">
+                        {formData.securityRequired || "Not set"}
+                      </p>
+                    </div>
+
+                    <div className="rounded-xl border border-[#E8E4DC] p-4">
+                      <p className="text-xs text-[#766D61]">Min bartenders</p>
+                      <p className="mt-2 text-sm font-semibold text-[#211E1A]">
+                        {toText(original.minBartenders) || "Not set"}
+                      </p>
+                    </div>
+
+                    <div className="rounded-xl border border-[#E8E4DC] p-4">
+                      <p className="text-xs text-[#766D61]">Shots</p>
+                      <p className="mt-2 text-sm font-semibold text-[#211E1A]">
+                        {toText(original.shotsAllowed) || "Not set"}
+                      </p>
+                    </div>
+
+                    <div className="rounded-xl border border-[#E8E4DC] p-4">
+                      <p className="text-xs text-[#766D61]">
+                        Additional insured
+                      </p>
+                      <p className="mt-2 text-sm font-semibold text-[#211E1A]">
+                        {formData.additionalInsuredRequired || "Not set"}
+                      </p>
+                    </div>
+                  </div>
+                </WorkspaceSection>
+
+                <section className="overflow-hidden rounded-[24px] border border-[#DCCEB5] bg-[#F2E9D9]">
+                  <div className="p-6 sm:p-8">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#8B693A]">
+                      Venue Operations
+                    </p>
+
+                    <h2 className="mt-2 text-2xl font-semibold tracking-[-0.02em] text-[#1E1B17]">
+                      Manage the two workflows tied to this venue.
+                    </h2>
+
+                    <p className="mt-2 max-w-3xl text-sm leading-6 text-[#6F6455]">
+                      The selected venue record ID is carried into both pages so preferred vendors and venue events stay connected to the correct venue.
+                    </p>
+
+                    <div className="mt-5 grid gap-3 md:grid-cols-2">
+                      <button
+                        type="button"
+                        onClick={openPreferredVendorLists}
+                        className="group rounded-2xl border border-[#D9CCB5] bg-white p-5 text-left transition hover:-translate-y-0.5 hover:shadow-md"
+                      >
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#F2EFE8]">
+                            <ListChecks className="h-5 w-5 text-[#7B6647]" />
+                          </div>
+                          <ArrowRight className="h-4 w-4 text-[#9B8C77] transition group-hover:translate-x-1" />
+                        </div>
+                        <p className="mt-4 text-base font-semibold text-[#211E1A]">
+                          Preferred Vendor Lists
+                        </p>
+                        <p className="mt-1 text-sm leading-5 text-[#766D61]">
+                          Create and manage the vendors this venue recommends or requires.
+                        </p>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={openVenueEvents}
+                        className="group rounded-2xl border border-[#D9CCB5] bg-white p-5 text-left transition hover:-translate-y-0.5 hover:shadow-md"
+                      >
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#F2EFE8]">
+                            <CalendarDays className="h-5 w-5 text-[#7B6647]" />
+                          </div>
+                          <ArrowRight className="h-4 w-4 text-[#9B8C77] transition group-hover:translate-x-1" />
+                        </div>
+                        <p className="mt-4 text-base font-semibold text-[#211E1A]">
+                          Venue Events
+                        </p>
+                        <p className="mt-1 text-sm leading-5 text-[#766D61]">
+                          Open the event list for this venue and review upcoming or past activity.
+                        </p>
+                      </button>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            )}
+
+            {activeSection === "basics" && (
+              <WorkspaceSection
+                icon={MapPin}
+                eyebrow="Venue Profile"
+                title="Basics"
+                description="The core information people need to identify and understand this venue."
+              >
+                <div className="grid gap-5 md:grid-cols-2">
+                  <FormField label="Venue Name">
+                    <Input
+                      value={formData.venueName}
+                      onChange={(event) => change("venueName", event.target.value)}
+                    />
+                  </FormField>
+
+                  <FormField label="Website">
+                    <div className="relative">
+                      <Globe className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#9B9286]" />
+                      <Input
+                        value={formData.website}
+                        onChange={(event) => change("website", event.target.value)}
+                        placeholder="https://..."
+                        className="pl-10"
+                      />
+                    </div>
+                  </FormField>
+
+                  <FormField label="Venue Address" className="md:col-span-2">
+                    <Input
+                      value={formData.venueAddress}
+                      onChange={(event) =>
+                        change("venueAddress", event.target.value)
+                      }
+                    />
+                  </FormField>
+
+                  <FormField label="Instagram">
+                    <Input
+                      value={formData.igHandle}
+                      onChange={(event) => change("igHandle", event.target.value)}
+                      placeholder="@venue"
+                    />
+                  </FormField>
+
+                  <FormField label="Floorplan">
+                    <Input
+                      value={formData.floorplan}
+                      onChange={(event) => change("floorplan", event.target.value)}
+                    />
+                  </FormField>
+
+                  <FormField label="Kitchen Type">
+                    <Input
+                      value={formData.kitchenType}
+                      onChange={(event) =>
+                        change("kitchenType", event.target.value)
+                      }
+                    />
+                  </FormField>
+
+                  <FormField label="Indoor / Outdoor">
+                    <Input
+                      value={formData.indoorOutdoor}
+                      onChange={(event) =>
+                        change("indoorOutdoor", event.target.value)
+                      }
+                    />
+                  </FormField>
+                </div>
+
+                <div className="mt-6 grid gap-3 sm:grid-cols-3">
+                  <ReadOnlyField label="Venue Type" value={original.venueType} />
+                  <ReadOnlyField label="Sales Region" value={original.salesRegion} />
+                  <ReadOnlyField
+                    label="Account Manager"
+                    value={original.accountManager}
+                  />
+                </div>
+              </WorkspaceSection>
+            )}
+
+            {activeSection === "contacts" && (
+              <WorkspaceSection
+                icon={User}
+                eyebrow="People"
+                title="Contacts"
+                description="Keep the people who actually answer questions easy to find."
+              >
+                <div className="grid gap-5 md:grid-cols-3">
+                  <FormField label="Coordinator Name">
+                    <Input
+                      value={formData.venueCoordinatorName}
+                      onChange={(event) =>
+                        change("venueCoordinatorName", event.target.value)
+                      }
+                    />
+                  </FormField>
+
+                  <FormField label="Coordinator Email">
+                    <Input
+                      type="email"
+                      value={formData.venueCoordinatorEmail}
+                      onChange={(event) =>
+                        change("venueCoordinatorEmail", event.target.value)
+                      }
+                    />
+                  </FormField>
+
+                  <FormField label="Coordinator Phone">
+                    <Input
+                      value={formData.venueCoordinatorPhoneNumber}
+                      onChange={(event) =>
+                        change("venueCoordinatorPhoneNumber", event.target.value)
+                      }
+                    />
+                  </FormField>
+
+                  <FormField label="Sales Phone">
+                    <Input
+                      value={formData.venueSalesPhoneNumber}
+                      onChange={(event) =>
+                        change("venueSalesPhoneNumber", event.target.value)
+                      }
+                    />
+                  </FormField>
+
+                  {isVenueStaff ? (
+                    <div className="rounded-xl border border-[#D9E1EA] bg-[#F7FAFC] p-4">
+                      <div className="flex items-start gap-3">
+                        <KeyRound className="mt-0.5 h-4 w-4 shrink-0 text-[#5D7188]" />
+                        <div>
+                          <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-[#6C7F92]">
+                            Portal Login Email
+                          </p>
+                          <p className="mt-1 text-sm font-semibold text-[#26384A]">
+                            {formData.venuePortalLoginEmail || user?.email || "Not set"}
+                          </p>
+                          <p className="mt-1 text-xs leading-5 text-[#718194]">
+                            Contact the CRUE team if venue portal access needs to be transferred to another email.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <FormField
+                      label="Portal Login Email"
+                      description="Back-office only. This email controls which venue user can access this record from the filtered venue list."
+                    >
+                      <Input
+                        type="email"
+                        value={formData.venuePortalLoginEmail}
+                        onChange={(event) =>
+                          change("venuePortalLoginEmail", event.target.value)
+                        }
+                      />
+                    </FormField>
+                  )}
+                </div>
+
+                <div className="my-7 border-t border-[#EEEAE2]" />
+
+                <div>
+                  <p className="text-sm font-semibold text-[#1E1B17]">
+                    Emergency Contact
+                  </p>
+
+                  <p className="mt-1 text-xs leading-5 text-[#81776B]">
+                    The person staff should contact when something changes onsite.
+                  </p>
+
+                  <div className="mt-4 grid gap-5 md:grid-cols-2">
+                    <FormField label="Emergency Contact Name">
+                      <Input
+                        value={formData.venueEmergencyContactName}
+                        onChange={(event) =>
+                          change("venueEmergencyContactName", event.target.value)
+                        }
+                      />
+                    </FormField>
+
+                    <FormField label="Emergency Contact Phone">
+                      <Input
+                        value={formData.venueEmergencyContactPhone}
+                        onChange={(event) =>
+                          change("venueEmergencyContactPhone", event.target.value)
+                        }
+                      />
+                    </FormField>
+                  </div>
+                </div>
+              </WorkspaceSection>
+            )}
+
+            {activeSection === "operations" && (
+              <WorkspaceSection
+                icon={Truck}
+                eyebrow="Event Operations"
+                title="Capacity & logistics"
+                description="Everything a vendor or event team needs to know before arriving onsite."
+              >
+                <div className="grid gap-5 md:grid-cols-3">
+                  <FormField label="Max Capacity Seated">
+                    <Input
+                      value={formData.maxCapacitySeated}
+                      onChange={(event) =>
+                        change("maxCapacitySeated", event.target.value)
+                      }
+                    />
+                  </FormField>
+
+                  <FormField label="Max Capacity Standing">
+                    <Input
+                      value={formData.maxCapacityStanding}
+                      onChange={(event) =>
+                        change("maxCapacityStanding", event.target.value)
+                      }
+                    />
+                  </FormField>
+
+                  <FormField label="Stage Available">
+                    <Input
+                      value={formData.stageAvailable}
+                      onChange={(event) =>
+                        change("stageAvailable", event.target.value)
+                      }
+                    />
+                  </FormField>
+
+                  <FormField label="Setup Start Time">
+                    <Input
+                      value={formData.setupStartTime}
+                      onChange={(event) =>
+                        change("setupStartTime", event.target.value)
+                      }
+                    />
+                  </FormField>
+
+                  <FormField label="Music Cutoff Time">
+                    <Input
+                      value={formData.musicCutoffTime}
+                      onChange={(event) =>
+                        change("musicCutoffTime", event.target.value)
+                      }
+                    />
+                  </FormField>
+
+                  <FormField label="Teardown Deadline">
+                    <Input
+                      value={formData.teardownDeadline}
+                      onChange={(event) =>
+                        change("teardownDeadline", event.target.value)
+                      }
+                    />
+                  </FormField>
+                </div>
+
+                <div className="mt-6 grid gap-5 md:grid-cols-2">
+                  <FormField label="Load-In Instructions">
+                    <Textarea
+                      value={formData.loadInInstructions}
+                      onChange={(event) =>
+                        change("loadInInstructions", event.target.value)
+                      }
+                      className="min-h-[110px]"
+                    />
+                  </FormField>
+
+                  <FormField label="Load-Out Instructions">
+                    <Textarea
+                      value={formData.loadOutInstructions}
+                      onChange={(event) =>
+                        change("loadOutInstructions", event.target.value)
+                      }
+                      className="min-h-[110px]"
+                    />
+                  </FormField>
+
+                  <FormField label="Vendor Parking">
+                    <Textarea
+                      value={formData.vendorParkingNotes}
+                      onChange={(event) =>
+                        change("vendorParkingNotes", event.target.value)
+                      }
+                      className="min-h-[100px]"
+                    />
+                  </FormField>
+
+                  <FormField label="Power Access">
+                    <Textarea
+                      value={formData.powerAccessNotes}
+                      onChange={(event) =>
+                        change("powerAccessNotes", event.target.value)
+                      }
+                      className="min-h-[100px]"
+                    />
+                  </FormField>
+
+                  <FormField label="Onsite Staff Notes">
+                    <Textarea
+                      value={formData.onsiteStaffNotes}
+                      onChange={(event) =>
+                        change("onsiteStaffNotes", event.target.value)
+                      }
+                      className="min-h-[100px]"
+                    />
+                  </FormField>
+                </div>
+              </WorkspaceSection>
+            )}
+
+            {activeSection === "bar" && (
+              <WorkspaceSection
+                icon={Wine}
+                eyebrow="Beverage Operations"
+                title="Bar & beverage"
+                description="The bar rules and onsite conditions that matter most before staffing or service begins."
+              >
+                <div className="grid gap-3 md:grid-cols-2">
+                  <ToggleField
+                    label="Alcohol Allowed"
+                    description="Venue permits alcohol service onsite."
+                    checked={formData.alcoholAllowed}
+                    onCheckedChange={(value) =>
+                      change("alcoholAllowed", value)
+                    }
+                  />
+
+                  <ToggleField
+                    label="Water Access"
+                    description="Bar staff have reasonable access to potable water."
+                    checked={formData.waterAccess}
+                    onCheckedChange={(value) => change("waterAccess", value)}
+                  />
+                </div>
+
+                <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  <ReadOnlyField
+                    label="Bar Setup Provided"
+                    value={original.barSetupProvided}
+                  />
+                  <ReadOnlyField
+                    label="Ice Machine"
+                    value={original.iceMachine}
+                  />
+                  <ReadOnlyField
+                    label="Shots Allowed"
+                    value={original.shotsAllowed}
+                  />
+                  <ReadOnlyField
+                    label="Alcohol Types Allowed"
+                    value={original.alcoholTypesAllowed}
+                  />
+                  <ReadOnlyField
+                    label="Min Bartenders"
+                    value={original.minBartenders}
+                  />
+                  <ReadOnlyField
+                    label="Outside Catering"
+                    value={original.outsideCateringAllowed}
+                  />
+                </div>
+
+                <div className="mt-6 grid gap-5 md:grid-cols-3">
+                  <FormField label="Serve Time Limit (Hours)">
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.5"
+                      value={formData.serveTimeAllowed}
+                      onChange={(event) =>
+                        change("serveTimeAllowed", event.target.value)
+                      }
+                    />
+                  </FormField>
+
+                  <FormField label="Signature Cocktail Limit">
+                    <Input
+                      value={formData.signatureCocktailLimit}
+                      onChange={(event) =>
+                        change("signatureCocktailLimit", event.target.value)
+                      }
+                    />
+                  </FormField>
+
+                  <FormField label="Trash Responsibility">
+                    <Input
+                      value={formData.trashResponsibility}
+                      onChange={(event) =>
+                        change("trashResponsibility", event.target.value)
+                      }
+                      placeholder="Venue, caterer, bar team..."
+                    />
+                  </FormField>
+                </div>
+              </WorkspaceSection>
+            )}
+
+            {activeSection === "policies" && (
+              <WorkspaceSection
+                icon={ShieldCheck}
+                eyebrow="Venue Rules"
+                title="Policies & compliance"
+                description="Keep the rules vendors need to follow in one place."
+              >
+                <div className="grid gap-5 md:grid-cols-2">
+                  <FormField label="Decor Rules">
+                    <Textarea
+                      value={formData.decorRules}
+                      onChange={(event) =>
+                        change("decorRules", event.target.value)
+                      }
+                      className="min-h-[100px]"
+                    />
+                  </FormField>
+
+                  <FormField label="Candle / Open Flame Policy">
+                    <Textarea
+                      value={formData.candleOpenFlamePolicy}
+                      onChange={(event) =>
+                        change("candleOpenFlamePolicy", event.target.value)
+                      }
+                      className="min-h-[100px]"
+                    />
+                  </FormField>
+
+                  <FormField label="Sound Restrictions">
+                    <Textarea
+                      value={formData.soundRestrictions}
+                      onChange={(event) =>
+                        change("soundRestrictions", event.target.value)
+                      }
+                      className="min-h-[100px]"
+                    />
+                  </FormField>
+
+                  <FormField label="Approved Caterers">
+                    <Textarea
+                      value={formData.approvedCaterers}
+                      onChange={(event) =>
+                        change("approvedCaterers", event.target.value)
+                      }
+                      className="min-h-[100px]"
+                    />
+                  </FormField>
+
+                  <FormField label="Insurance Requirements">
+                    <Textarea
+                      value={formData.insuranceRequirements}
+                      onChange={(event) =>
+                        change("insuranceRequirements", event.target.value)
+                      }
+                      className="min-h-[100px]"
+                    />
+                  </FormField>
+
+                  <FormField label="Vendor Insurance Requirements">
+                    <Textarea
+                      value={formData.vendorInsuranceRequirements}
+                      onChange={(event) =>
+                        change("vendorInsuranceRequirements", event.target.value)
+                      }
+                      className="min-h-[100px]"
+                    />
+                  </FormField>
+
+                  <FormField label="Security Required">
+                    <Input
+                      value={formData.securityRequired}
+                      onChange={(event) =>
+                        change("securityRequired", event.target.value)
+                      }
+                    />
+                  </FormField>
+
+                  <FormField label="Min Security Staff">
+                    <Input
+                      value={formData.minSecurityStaff}
+                      onChange={(event) =>
+                        change("minSecurityStaff", event.target.value)
+                      }
+                    />
+                  </FormField>
+
+                  <FormField label="Additional Insured Required">
+                    <Input
+                      value={formData.additionalInsuredRequired}
+                      onChange={(event) =>
+                        change("additionalInsuredRequired", event.target.value)
+                      }
+                    />
+                  </FormField>
+                </div>
+              </WorkspaceSection>
+            )}
+
+            {activeSection === "notes" && (
+              <div className="space-y-5">
+                <WorkspaceSection
+                  icon={FileText}
+                  eyebrow="Venue Information"
+                  title="Venue notes"
+                  description="Keep general venue context, operating notes, and anything event teams should know."
+                >
+                  <FormField label="Notes">
+                    <Textarea
+                      value={formData.notes}
+                      onChange={(event) => change("notes", event.target.value)}
+                      placeholder="General venue notes..."
+                      className="min-h-[220px]"
+                    />
+                  </FormField>
+                </WorkspaceSection>
+
+                {!isVenueStaff && (
+                  <WorkspaceSection
+                    icon={KeyRound}
+                    eyebrow="Back Office"
+                    title="System & source fields"
+                    description="Operational database information kept out of the venue-facing view."
+                  >
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <ReadOnlyField
+                        label="Files & Media"
+                        value={original.filesMedia}
+                      />
+                      <ReadOnlyField
+                        label="Page Content"
+                        value={original.pageContent}
+                      />
+                      <ReadOnlyField
+                        label="2025 Review Completed?"
+                        value={original.review2025Completed}
+                      />
+                      <ReadOnlyField
+                        label="QuickBooks Customer ID"
+                        value={formData.quickbooksCustomerID}
+                      />
+                    </div>
+
+                    <div className="mt-4 rounded-xl border border-[#E7E2D8] bg-[#F8F6F1] p-4">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.11em] text-[#8D8478]">
+                        Venue Record ID
+                      </p>
+                      <p className="mt-1 break-all font-mono text-xs text-[#6E665C]">
+                        {recordId}
+                      </p>
+                      <p className="mt-2 text-[11px] text-[#958B7E]">
+                        Source: {urlRecordId ? "URL parameter" : "Softr current record context"}
+                      </p>
+                    </div>
+                  </WorkspaceSection>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="sticky bottom-3 z-30 mt-6">
+            <div className="flex flex-col gap-3 rounded-2xl border border-black/10 bg-[#171714] p-4 text-white shadow-2xl sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-semibold">
+                  {dirty
+                    ? "You have unsaved venue changes."
+                    : "This venue is up to date."}
+                </p>
+                <p className="mt-1 text-xs text-white/50">
+                  Save venue details here, then move into preferred vendors or venue events.
+                </p>
+              </div>
+
+              <div className="flex w-full gap-2 sm:w-auto">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={openPreferredVendorLists}
+                  className="flex-1 border-white/20 bg-transparent text-white hover:bg-white/10 hover:text-white sm:flex-none"
+                >
+                  <ListChecks className="mr-2 h-4 w-4" />
+                  Preferred Vendors
+                </Button>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={openVenueEvents}
+                  className="flex-1 border-white/20 bg-transparent text-white hover:bg-white/10 hover:text-white sm:flex-none"
+                >
+                  <CalendarDays className="mr-2 h-4 w-4" />
+                  Venue Events
+                </Button>
+
+                <Button
+                  type="button"
+                  onClick={handleSave}
+                  disabled={saving || !dirty || !updateVenue.enabled}
+                  className="flex-1 bg-[#D6B372] text-[#171714] hover:bg-[#E2C58F] sm:flex-none"
+                >
+                  {saving ? (
+                    <>
+                      <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                      Saving
+                    </>
+                  ) : (
+                    <>
+                      <Save className="mr-2 h-4 w-4" />
+                      Save
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
