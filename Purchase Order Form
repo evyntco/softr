@@ -1,0 +1,829 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigationSetting, useTextSetting } from "@/lib/editable-settings";
+import { datasource, q, useRecordCreate, useRecordUpdate } from "@/lib/datasource";
+import { NavigationAction } from "@/components/navigation-action";
+import { toast } from "sonner";
+
+const ds = datasource.define({
+  purchaseOrders: "d965c654-577a-4991-b6bd-ef7955a67e06",
+  beverageConfig: "ee026c21-7764-42aa-a6a8-e2ad643f5065",
+});
+
+
+// Writes back to the same Beverage Configuration Database used by the estimator.
+const beverageConfigUpdateFields = q.select({
+  suppliesList: "Supplies List",
+  purchaseOrders: "Purchase Orders",
+});
+
+function safeNumber(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function safeText(value, fallback = "") {
+  if (value == null) return fallback;
+  return String(value);
+}
+
+function formatNumber(value, digits = 0) {
+  return safeNumber(value).toLocaleString(undefined, {
+    maximumFractionDigits: digits,
+  });
+}
+
+function generatePoNumber() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  const random = Math.random().toString(36).slice(2, 6).toUpperCase();
+  return `PO-${year}${month}${day}-${random}`;
+}
+
+function readPayloadFromUrl() {
+  if (typeof window === "undefined") return { rows: [], reservationId: "", projectName: "", recordId: "" };
+
+  const allRows = [];
+  let reservationId = "";
+  let projectName = "";
+  let recordId = "";
+
+  const safeParse = (raw) => {
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      try {
+        return JSON.parse(decodeURIComponent(raw));
+      } catch {
+        console.error("[PO Import] Failed to parse JSON:", raw?.substring?.(0, 100));
+        return null;
+      }
+    }
+  };
+
+  try {
+    console.log("[PO Import] Checking sessionStorage...");
+    console.log("[PO Import] All sessionStorage keys:", Object.keys(sessionStorage));
+    for (let i = 0; i < sessionStorage.length; i++) {
+      const key = sessionStorage.key(i);
+      const value = sessionStorage.getItem(key);
+      console.log(`[PO Import] Key: "${key}" => Value preview:`, value?.substring?.(0, 200));
+    }
+  } catch (e) {
+    console.error("[PO Import] Error listing sessionStorage:", e);
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  const poKey = params.get("poKey");
+  recordId = params.get("recordId") || "";
+
+  if (poKey) {
+    console.log(`[PO Import] Reading sessionStorage with poKey: "${poKey}"`);
+    try {
+      const storedData = sessionStorage.getItem(poKey);
+      if (storedData) {
+        console.log(`[PO Import] Found data in sessionStorage key "${poKey}":`, storedData.substring(0, 200));
+        const parsed = safeParse(storedData);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          console.log(`[PO Import] Successfully parsed ${parsed.length} items from "${poKey}"`);
+          allRows.push(...parsed);
+          sessionStorage.removeItem(poKey);
+        } else if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          const nestedItems = parsed.items || parsed.lineItems || parsed.po || parsed.rows;
+          if (Array.isArray(nestedItems) && nestedItems.length > 0) {
+            console.log(`[PO Import] Found nested array with ${nestedItems.length} items in "${poKey}"`);
+            allRows.push(...nestedItems);
+            sessionStorage.removeItem(poKey);
+          }
+        }
+      } else {
+        console.log(`[PO Import] No data found in sessionStorage key "${poKey}"`);
+      }
+    } catch (e) {
+      console.error("[PO Import] Error reading sessionStorage:", e);
+    }
+  } else {
+    console.log("[PO Import] No poKey URL parameter found, will try fallback keys...");
+
+    const sessionKeys = [
+      "po_line_items", "poLineItems", "po-line-items", "lineItems", "line_items",
+      "po_items", "poItems", "po", "purchaseOrder", "purchase_order", "items"
+    ];
+
+    try {
+      for (const key of sessionKeys) {
+        const storedData = sessionStorage.getItem(key);
+        if (storedData) {
+          console.log(`[PO Import] Found data in sessionStorage key "${key}":`, storedData.substring(0, 200));
+          const parsed = safeParse(storedData);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            console.log(`[PO Import] Successfully parsed ${parsed.length} items from "${key}"`);
+            allRows.push(...parsed);
+            sessionStorage.removeItem(key);
+            break;
+          } else if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            const nestedItems = parsed.items || parsed.lineItems || parsed.po || parsed.rows;
+            if (Array.isArray(nestedItems) && nestedItems.length > 0) {
+              console.log(`[PO Import] Found nested array with ${nestedItems.length} items in "${key}"`);
+              allRows.push(...nestedItems);
+              sessionStorage.removeItem(key);
+              break;
+            }
+          }
+        }
+      }
+
+      if (allRows.length > 0) {
+        console.log(`[PO Import] Total items from sessionStorage: ${allRows.length}`);
+      } else {
+        console.log("[PO Import] No items found in sessionStorage, will try URL params...");
+      }
+    } catch (e) {
+      console.error("[PO Import] Error reading sessionStorage:", e);
+    }
+  }
+
+  if (allRows.length === 0) {
+    try {
+      const rawPo = params.get("po");
+      const parsedPo = safeParse(rawPo);
+      if (Array.isArray(parsedPo)) allRows.push(...parsedPo);
+
+      const rawItems = params.get("items");
+      const parsedItems = safeParse(rawItems);
+      if (Array.isArray(parsedItems)) allRows.push(...parsedItems);
+
+      const rawLineItems = params.get("lineItems");
+      const parsedLineItems = safeParse(rawLineItems);
+      if (Array.isArray(parsedLineItems)) allRows.push(...parsedLineItems);
+
+      const indexedPrefixes = ["po", "items", "lineItems", "item"];
+      for (const prefix of indexedPrefixes) {
+        for (let i = 0; i < 500; i++) {
+          const raw = params.get(`${prefix}[${i}]`);
+          if (!raw) break;
+          const parsed = safeParse(raw);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            allRows.push(parsed);
+          }
+        }
+      }
+
+      if (window.location.hash && window.location.hash.length > 1) {
+        try {
+          const hashParams = new URLSearchParams(window.location.hash.slice(1));
+          const hashPo = hashParams.get("po");
+          const parsedHashPo = safeParse(hashPo);
+          if (Array.isArray(parsedHashPo)) allRows.push(...parsedHashPo);
+        } catch { /* ignore */ }
+      }
+    } catch (err) {
+      console.error("Error reading PO payload from URL:", err);
+    }
+  }
+
+  for (const row of allRows) {
+    if (!reservationId) {
+      reservationId = safeText(row?.reservationId ?? row?.reservation_id ?? row?.ReservationId ?? row?.ReservationID);
+    }
+    if (!projectName) {
+      projectName = safeText(row?.projectName ?? row?.project_name ?? row?.ProjectName ?? row?.Project ?? row?.eventName ?? row?.event_name);
+    }
+    if (reservationId && projectName) break;
+  }
+
+  if (!reservationId) {
+    reservationId = params.get("reservationId") || params.get("reservation_id") || params.get("reservation") || "";
+  }
+  if (!projectName) {
+    projectName = params.get("projectName") || params.get("project_name") || params.get("project") || "";
+  }
+
+  if (!reservationId || !projectName) {
+    try {
+      const storedReservationId = sessionStorage.getItem("reservationId") || sessionStorage.getItem("reservation_id");
+      if (storedReservationId && !reservationId) {
+        try { reservationId = JSON.parse(storedReservationId); } catch { reservationId = storedReservationId; }
+        reservationId = safeText(reservationId);
+      }
+      const storedProjectName = sessionStorage.getItem("projectName") || sessionStorage.getItem("project_name");
+      if (storedProjectName && !projectName) {
+        try { projectName = JSON.parse(storedProjectName); } catch { projectName = storedProjectName; }
+        projectName = safeText(projectName);
+      }
+    } catch { /* ignore */ }
+  }
+
+  console.log("[PO Import] Reservation ID:", reservationId, "Project Name:", projectName);
+
+  // Only remove truly identical rows. Do not collapse rows merely because
+  // they share the same Item + Category; those may represent distinct package
+  // sizes, quantities, or requirements that must remain in the final table.
+  const seen = new Set();
+  const dedupedRows = allRows.filter(row => {
+    const key = [
+      safeText(row?.category ?? row?.Category),
+      safeText(row?.item ?? row?.Item),
+      safeText(row?.quantity ?? row?.Quantity),
+      safeText(row?.purchaseUnit ?? row?.["Purchase Unit"] ?? row?.purchase_unit),
+      safeText(row?.packageSize ?? row?.["Package Size"] ?? row?.package_size),
+      safeText(row?.needed ?? row?.Needed),
+    ].join("|");
+
+    if (!key.replace(/\|/g, "").trim()) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  return { rows: dedupedRows, reservationId, projectName, recordId };
+}
+
+function normalizeLineItem(row, index) {
+  return {
+    id: `${index}-${safeText(row?.item ?? row?.Item)}`,
+    category: safeText(row?.category ?? row?.Category),
+    item: safeText(row?.item ?? row?.Item),
+    quantity: safeNumber(row?.quantity ?? row?.Quantity),
+    purchaseUnit: safeText(row?.purchaseUnit ?? row?.["Purchase Unit"] ?? row?.purchase_unit),
+    packageSize: safeText(row?.packageSize ?? row?.["Package Size"] ?? row?.package_size),
+    needed: safeText(row?.needed ?? row?.Needed),
+  };
+}
+
+function buildSuppliesListString(rows, poNumber, projectName = "") {
+  const header = "Category | Item | Quantity | Purchase Unit | Package Size | Needed";
+  const divider = "--- | --- | --- | --- | --- | ---";
+
+  const cleanCell = (value) =>
+    safeText(value)
+      .replace(/\r?\n/g, " ")
+      .replace(/\|/g, "/")
+      .trim();
+
+  const body = rows.map((row) =>
+    [
+      cleanCell(row.category),
+      cleanCell(row.item),
+      formatNumber(row.quantity, 2),
+      cleanCell(row.purchaseUnit),
+      cleanCell(row.packageSize),
+      cleanCell(row.needed),
+    ].join(" | ")
+  );
+
+  return [
+    projectName ? `Project: ${projectName}` : "",
+    poNumber ? `PO: ${poNumber}` : "",
+    `Total Supply Rows: ${rows.length}`,
+    "",
+    header,
+    divider,
+    ...body,
+  ]
+    .filter((line, index) => line !== "" || index === 3)
+    .join("\n")
+    .trim();
+}
+
+export default function Block() {
+  const pageTitle = useTextSetting({
+    name: "review-title",
+    label: "Page Title",
+    initialValue: "Review Purchase Order",
+  });
+
+  const submitButtonText = useTextSetting({
+    name: "submit-button-text",
+    label: "Submit Button Text",
+    initialValue: "Approve & Submit Purchase Order",
+  });
+
+  const fullOrderReviewLink = useNavigationSetting({
+    name: "full-order-review",
+    label: "Full Order Review Page",
+    initialValue: {
+      action: "OPEN_PAGE",
+      destination: "/purchase-order-details",
+      openIn: "SELF",
+    },
+  });
+
+  const [rows, setRows] = useState([]);
+  const [poNumber, setPoNumber] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [completedCount, setCompletedCount] = useState(0);
+  const [failedCount, setFailedCount] = useState(0);
+
+  const submissionRef = useRef({
+    total: 0,
+    completed: 0,
+    failed: 0,
+    active: false,
+    suppliesListRequired: false,
+    suppliesListCompleted: false,
+    suppliesListFailed: false,
+  });
+
+  const [reservationId, setReservationId] = useState("");
+  const [projectName, setProjectName] = useState("");
+  const [beverageConfigId, setBeverageConfigId] = useState("");
+  const [suppliesListUpdated, setSuppliesListUpdated] = useState(false);
+
+  useEffect(() => {
+    const {
+      rows: payloadRows,
+      reservationId: rid,
+      projectName: pn,
+      recordId,
+    } = readPayloadFromUrl();
+
+    const normalizedRows = payloadRows
+      .map(normalizeLineItem)
+      .filter(row => row.item && row.quantity > 0);
+
+    setRows(normalizedRows);
+    setReservationId(rid);
+    setProjectName(pn);
+    setPoNumber(generatePoNumber());
+
+    // IMPORTANT: this page does not look up Beverage Configuration records.
+    // It only uses the exact recordId passed by the previous estimator page.
+    setBeverageConfigId(recordId || "");
+
+    if (recordId) {
+      console.log("[PO Import] Using Beverage Configuration recordId from previous page:", recordId);
+    } else {
+      console.error("[PO Import] Missing recordId URL parameter.");
+    }
+  }, []);
+
+
+  const validRows = useMemo(
+    () => rows.filter(row => row.category && row.item && row.quantity > 0 && row.purchaseUnit && row.packageSize && row.needed),
+    [rows]
+  );
+
+  // Create PO lines in Purchase Orders table (without Supplies List - that field is on Beverage Config)
+  const createPurchaseOrderLine = useRecordCreate({
+    from: ds.purchaseOrders,
+    fields: q.select({
+      name: "Name",
+      poNumber: "PO Number",
+      category: "Category",
+      item: "Item",
+      quantity: "Quantity",
+      purchaseUnit: "Purchase Unit",
+      packageSize: "Package Size",
+      needed: "Needed",
+      beverageConfiguration: "Beverage Configuration",
+    }),
+    onSuccess: () => handleLineSettled(true),
+    onError: error => handleLineSettled(false, error),
+  });
+
+  // Update Beverage Configuration with Supplies List
+  const updateBeverageConfig = useRecordUpdate({
+    from: ds.beverageConfig,
+    fields: beverageConfigUpdateFields,
+    onSuccess: () => {
+      console.log("[PO Import] Successfully updated Beverage Configuration with Supplies List");
+      submissionRef.current.suppliesListCompleted = true;
+      submissionRef.current.suppliesListFailed = false;
+      setSuppliesListUpdated(true);
+      maybeFinishSubmission();
+    },
+    onError: error => {
+      console.error("[PO Import] Failed to update Beverage Configuration:", error);
+      submissionRef.current.suppliesListCompleted = false;
+      submissionRef.current.suppliesListFailed = true;
+      setSuppliesListUpdated(false);
+      toast.error("The PO lines may have saved, but the Beverage Configuration Supplies List failed to update.");
+      maybeFinishSubmission();
+    },
+  });
+
+  function maybeFinishSubmission() {
+    const next = submissionRef.current;
+    if (!next.active) return;
+
+    const lineItemsFinished = next.completed >= next.total;
+    const suppliesListFinished =
+      !next.suppliesListRequired ||
+      next.suppliesListCompleted ||
+      next.suppliesListFailed;
+
+    if (!lineItemsFinished || !suppliesListFinished) return;
+
+    next.active = false;
+    setIsSubmitting(false);
+
+    if (next.failed === 0 && !next.suppliesListFailed) {
+      setSubmitted(true);
+      toast.success(
+        `${next.total} purchase-order line${next.total === 1 ? "" : "s"} saved under ${poNumber}, and the Beverage Configuration Supplies List was updated.`
+      );
+      return;
+    }
+
+    const messages = [];
+    if (next.failed > 0) {
+      messages.push(`${next.failed} of ${next.total} PO line items failed`);
+    }
+    if (next.suppliesListFailed) {
+      messages.push("the Supplies List field failed to update");
+    }
+
+    toast.error(`${messages.join(" and ")}. The submission was not marked complete.`);
+  }
+
+  function handleLineSettled(success, error) {
+    const next = submissionRef.current;
+    if (!next.active) return;
+
+    next.completed += 1;
+    if (!success) {
+      next.failed += 1;
+      console.error("Failed to create PO line:", error);
+    }
+
+    setCompletedCount(next.completed);
+    setFailedCount(next.failed);
+    maybeFinishSubmission();
+  }
+
+  function updateRow(rowId, field, value) {
+    if (submitted || isSubmitting) return;
+    setRows(current =>
+      current.map(row =>
+        row.id === rowId ? { ...row, [field]: field === "quantity" ? Math.max(0, safeNumber(value)) : value } : row
+      )
+    );
+  }
+
+  function removeRow(rowId) {
+    if (submitted || isSubmitting) return;
+    setRows(current => current.filter(row => row.id !== rowId));
+  }
+
+  function buildFullOrderReviewDestination() {
+    const base = fullOrderReviewLink.destination || "/purchase-order-details";
+    const params = new URLSearchParams();
+
+    if (poNumber.trim()) params.set("poNumber", poNumber.trim());
+    if (beverageConfigId) params.set("recordId", beverageConfigId);
+    if (projectName) params.set("projectName", projectName);
+    if (reservationId) params.set("reservationId", reservationId);
+
+    const query = params.toString();
+    return query
+      ? `${base}${base.includes("?") ? "&" : "?"}${query}`
+      : base;
+  }
+
+  function submitPurchaseOrder() {
+    if (submitted || isSubmitting) return;
+
+    const normalizedPoNumber = poNumber.trim();
+    if (!normalizedPoNumber) {
+      toast.error("Enter a PO number before submitting.");
+      return;
+    }
+    if (!rows.length) {
+      toast.error("There are no purchase-order line items to submit.");
+      return;
+    }
+    if (validRows.length !== rows.length) {
+      toast.error("Every line requires Category, Item, Quantity, Purchase Unit, Package Size, and Needed.");
+      return;
+    }
+
+    if (!beverageConfigId) {
+      toast.error(
+        "Missing Beverage Configuration recordId. Open this page from the estimator so it can pass the exact record ID."
+      );
+      return;
+    }
+
+    if (!updateBeverageConfig.enabled) {
+      toast.error(
+        "The Beverage Configuration update action is not enabled. Please enable the 'Edit record' action for the Beverage Configuration datasource in the block's Actions tab."
+      );
+      return;
+    }
+
+    submissionRef.current = {
+      total: validRows.length,
+      completed: 0,
+      failed: 0,
+      active: true,
+      suppliesListRequired: true,
+      suppliesListCompleted: false,
+      suppliesListFailed: false,
+    };
+
+    setCompletedCount(0);
+    setFailedCount(0);
+    setSuppliesListUpdated(false);
+    setIsSubmitting(true);
+
+    // Build a complete summary of the review table. Every column written to
+    // the PO is represented in the Beverage Configuration "Supplies List".
+    const suppliesListString = buildSuppliesListString(validRows, normalizedPoNumber, projectName);
+
+    console.log("[PO Submit] Supplies List summary:", suppliesListString);
+    console.log("[PO Submit] Creating records with:", {
+      poNumber: normalizedPoNumber,
+      reservationId: reservationId || "(none)",
+      projectName: projectName || "(none)",
+      beverageConfigId: beverageConfigId || "(none)",
+      suppliesListPreview: suppliesListString.substring(0, 500),
+      suppliesListCharacters: suppliesListString.length,
+      totalItems: validRows.length,
+    });
+
+    // Create each PO line in Purchase Orders
+    validRows.forEach(row => {
+      createPurchaseOrderLine.mutate({
+        name: projectName || normalizedPoNumber,
+        poNumber: normalizedPoNumber,
+        category: row.category,
+        item: row.item,
+        quantity: String(row.quantity),
+        purchaseUnit: row.purchaseUnit,
+        packageSize: row.packageSize,
+        needed: row.needed,
+        beverageConfiguration: beverageConfigId ? [{ id: beverageConfigId }] : undefined,
+      });
+    });
+
+    // Update the exact Beverage Configuration record with the complete table
+    // summary. Vibe Coding's useRecordUpdate expects a nested fields object.
+    updateBeverageConfig.mutate({
+      recordId: beverageConfigId,
+      fields: {
+        suppliesList: suppliesListString,
+      },
+    });
+  }
+
+  if (!rows.length) {
+    return (
+      <div className="container py-8">
+        <div className="content max-w-4xl mx-auto">
+          <section className="rounded-xl border bg-card p-8 text-center shadow-sm">
+            <h1 className="text-2xl font-semibold">No purchase order to review</h1>
+            <p className="text-sm text-muted-foreground mt-2">
+              Open this page from the beverage estimator using the Review + Save Purchase Order button.
+            </p>
+          </section>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="container py-8">
+      <div className="content max-w-6xl mx-auto">
+        <div className="mb-8">
+          <span className="inline-flex rounded-full bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground">
+            Purchase Order Review
+          </span>
+          <h1 className="font-heading text-4xl mt-3">{pageTitle}</h1>
+          {(reservationId || projectName) && (
+            <div className="flex flex-wrap gap-4 mt-4">
+              {reservationId && (
+                <div className="inline-flex items-center gap-2 rounded-lg border bg-muted/50 px-4 py-2">
+                  <span className="text-xs font-medium text-muted-foreground">Reservation</span>
+                  <span className="text-sm font-semibold">{reservationId}</span>
+                </div>
+              )}
+              {projectName && (
+                <div className="inline-flex items-center gap-2 rounded-lg border bg-muted/50 px-4 py-2">
+                  <span className="text-xs font-medium text-muted-foreground">Project</span>
+                  <span className="text-sm font-semibold">{projectName}</span>
+                </div>
+              )}
+            </div>
+          )}
+          <p className="text-muted-foreground text-lg mt-2">
+            Review the final line items. When approved, each item will be saved as its own record under the same PO number.
+          </p>
+        </div>
+
+        <div className="grid lg:grid-cols-[1fr_320px] gap-6 items-start">
+          <section className="rounded-xl border bg-card shadow-sm overflow-hidden">
+            <div className="p-6 border-b">
+              <div className="grid md:grid-cols-[1fr_auto] gap-4 items-end">
+                <label className="block space-y-2">
+                  <span className="text-xs font-medium">PO Number</span>
+                  <input
+                    type="text"
+                    value={poNumber}
+                    disabled={submitted || isSubmitting}
+                    onChange={event => setPoNumber(event.target.value)}
+                    className="w-full rounded-md border bg-background px-3 py-2 text-sm disabled:opacity-60"
+                  />
+                </label>
+                {!submitted && !isSubmitting && (
+                  <button
+                    type="button"
+                    onClick={() => setPoNumber(generatePoNumber())}
+                    className="h-10 rounded-md border bg-background px-4 text-sm font-medium hover:bg-muted"
+                  >
+                    New PO Number
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[900px] text-sm">
+                <thead className="bg-muted/50 border-b">
+                  <tr>
+                    <TableHead>Category</TableHead>
+                    <TableHead>Item</TableHead>
+                    <TableHead className="w-28">Quantity</TableHead>
+                    <TableHead>Purchase Unit</TableHead>
+                    <TableHead>Package Size</TableHead>
+                    <TableHead>Needed</TableHead>
+                    {!submitted && <TableHead className="w-20" />}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map(row => (
+                    <tr key={row.id} className="border-b last:border-b-0">
+                      <TableCell>
+                        <LineInput value={row.category} disabled={submitted || isSubmitting} onChange={value => updateRow(row.id, "category", value)} />
+                      </TableCell>
+                      <TableCell>
+                        <LineInput value={row.item} disabled={submitted || isSubmitting} onChange={value => updateRow(row.id, "item", value)} />
+                      </TableCell>
+                      <TableCell>
+                        <LineInput type="number" value={row.quantity} disabled={submitted || isSubmitting} onChange={value => updateRow(row.id, "quantity", value)} />
+                      </TableCell>
+                      <TableCell>
+                        <LineInput value={row.purchaseUnit} disabled={submitted || isSubmitting} onChange={value => updateRow(row.id, "purchaseUnit", value)} />
+                      </TableCell>
+                      <TableCell>
+                        <LineInput value={row.packageSize} disabled={submitted || isSubmitting} onChange={value => updateRow(row.id, "packageSize", value)} />
+                      </TableCell>
+                      <TableCell>
+                        <LineInput value={row.needed} disabled={submitted || isSubmitting} onChange={value => updateRow(row.id, "needed", value)} />
+                      </TableCell>
+                      {!submitted && (
+                        <TableCell>
+                          <button
+                            type="button"
+                            disabled={isSubmitting}
+                            onClick={() => removeRow(row.id)}
+                            className="rounded-md border px-2.5 py-2 text-xs hover:bg-muted disabled:opacity-50"
+                          >
+                            Remove
+                          </button>
+                        </TableCell>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <aside className="lg:sticky lg:top-6">
+            <section className="rounded-xl border-2 border-primary bg-card shadow-sm">
+              <div className="p-6 border-b">
+                <span className="inline-flex rounded-full bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground">
+                  {submitted ? "Submitted" : "Ready for Approval"}
+                </span>
+                <h2 className="text-2xl font-semibold mt-3">{poNumber || "Purchase Order"}</h2>
+                <div className="text-4xl font-bold text-primary mt-2">{formatNumber(rows.length)}</div>
+                <p className="text-xs text-muted-foreground mt-1">line item{rows.length === 1 ? "" : "s"}</p>
+              </div>
+
+              <div className="p-6 space-y-4">
+                <SummaryLine label="PO Number" value={poNumber || "Not set"} />
+                {reservationId && <SummaryLine label="Reservation ID" value={reservationId} />}
+                {projectName && <SummaryLine label="Project Name" value={projectName} />}
+                <SummaryLine label="Line Items" value={formatNumber(rows.length)} />
+                <SummaryLine
+                  label="Supplies List"
+                  value={beverageConfigId ? `${formatNumber(validRows.length)} rows ready` : "Configuration not linked"}
+                />
+
+                {isSubmitting && (
+                  <>
+                    <SummaryLine label="Saved" value={`${completedCount - failedCount}/${rows.length}`} />
+                    <SummaryLine label="Failed" value={formatNumber(failedCount)} />
+                  </>
+                )}
+
+                {submitted ? (
+                  <>
+                    <div className="rounded-lg border bg-primary/5 p-4 space-y-3 text-sm">
+                      <div className="flex items-center gap-2">
+                        <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">✓</span>
+                        <span className="font-semibold">Submission Complete</span>
+                      </div>
+                      <div className="space-y-1">
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Lines Created</span>
+                          <span className="font-semibold">{completedCount - failedCount} of {rows.length}</span>
+                        </div>
+                        {failedCount > 0 && (
+                          <div className="flex justify-between text-destructive">
+                            <span>Failed</span>
+                            <span className="font-semibold">{failedCount}</span>
+                          </div>
+                        )}
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">PO Number</span>
+                          <span className="font-semibold">{poNumber}</span>
+                        </div>
+                        {projectName && (
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">Project Name</span>
+                            <span className="font-semibold text-right">{projectName}</span>
+                          </div>
+                        )}
+                        {reservationId && (
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">Reservation ID</span>
+                            <span className="font-semibold">{reservationId}</span>
+                          </div>
+                        )}
+                        {suppliesListUpdated && (
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">Supplies List</span>
+                            <span className="font-semibold text-green-600">Updated ✓</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <NavigationAction
+                      navigation={{
+                        ...fullOrderReviewLink,
+                        destination: buildFullOrderReviewDestination(),
+                      }}
+                    >
+                      <button
+                        type="button"
+                        className="w-full rounded-md border bg-background px-4 py-3 text-sm font-semibold hover:bg-muted"
+                      >
+                        Review + Edit Entire Order
+                      </button>
+                    </NavigationAction>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={submitPurchaseOrder}
+                    disabled={isSubmitting}
+                    className="w-full rounded-md bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                  >
+                    {isSubmitting ? `Saving ${completedCount}/${rows.length}...` : submitButtonText}
+                  </button>
+                )}
+              </div>
+            </section>
+          </aside>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TableHead({ children, className = "" }) {
+  return <th className={`px-4 py-3 text-left text-xs font-semibold text-muted-foreground ${className}`}>{children}</th>;
+}
+
+function TableCell({ children }) {
+  return <td className="px-3 py-3 align-middle">{children}</td>;
+}
+
+function LineInput({ type = "text", value, disabled, onChange }) {
+  return (
+    <input
+      type={type}
+      min={type === "number" ? 0 : undefined}
+      step={type === "number" ? 1 : undefined}
+      value={value}
+      disabled={disabled}
+      onChange={event => onChange(event.target.value)}
+      className="w-full rounded-md border bg-background px-3 py-2 text-sm disabled:border-transparent disabled:bg-transparent disabled:px-0 disabled:opacity-100"
+    />
+  );
+}
+
+function SummaryLine({ label, value }) {
+  return (
+    <div className="flex justify-between gap-4 text-sm">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-semibold text-right">{value}</span>
+    </div>
+  );
+}
