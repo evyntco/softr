@@ -1,0 +1,1303 @@
+import { useEffect, useMemo, useState } from "react";
+
+import {
+  datasource,
+  q,
+  useFieldOptions,
+  useRecord,
+  useRecords,
+  useRecordCreate,
+} from "@/lib/datasource";
+
+import { useCurrentUser } from "@/lib/user";
+
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { toast } from "sonner";
+
+import {
+  ArrowLeft,
+  Check,
+  CheckCircle2,
+  CircleAlert,
+  ClipboardList,
+  FilePenLine,
+  Loader2,
+  Search,
+  Send,
+  UserRound,
+  X,
+} from "lucide-react";
+
+/* =========================================================
+   BEVERAGE CONFIGURATION CHANGE ORDER
+
+   This block NEVER updates Beverage Configuration.
+
+   It:
+   1. Uses ?recordId=<Beverage Configuration record id> when present.
+   2. Otherwise lets the planner search/select Beverage Configuration.
+   3. Shows Final Details fields as Current Value vs Requested Change.
+   4. Creates one Beverage Configuration Change Log row per changed field.
+   5. Groups all created rows with one Change Order ID.
+
+   IMPORTANT — CHANGE LOG CONNECTION
+   ---------------------------------
+   Connect this Vibe block to:
+   - Beverage Configuration
+   - Beverage Configuration Change Log
+
+   Replace CHANGE_LOG_SOURCE_ID below with the Softr source ID for the
+   Beverage Configuration Change Log connection.
+
+   Expected Change Log editable fields:
+   Name
+   Change Order ID
+   Beverage Configuration Record ID
+   Project Name
+   Event Date
+   Event Location
+   Field Group
+   Field Changed
+   Previous Value
+   Requested Value
+   Change Reason
+   Requested By
+   Change Status
+
+   If your existing database uses different names, change ONLY the literal
+   property names inside changeLogFields.
+========================================================= */
+
+const ds = datasource.define({
+  beverageConfig: "6fd9fa65-d112-4ff0-85a0-2357800746e6",
+  changeLog: "f886d05c-fb4f-4477-a201-59b1b8f8e2dd",
+});
+
+/* =========================================================
+   BEVERAGE CONFIGURATION — READ ONLY
+========================================================= */
+
+const beverageFields = q.select({
+  projectName: "Project Name",
+
+  eventType: "Event Type",
+  eventDate: "Event Date",
+  ceremonyTime: "Ceremony Time",
+  eventLocation: "Event Location",
+  venuePartner: "Venue Partner",
+
+  eventHostName: "Event Host Name",
+  contactEmail: "Contact Email",
+  contactPhone: "Contact Phone",
+  secondaryContactName: "Secondary/Day of Contact",
+  secondaryContactPhone: "Secondary/Day of Contact Number",
+
+  eventStatus: "Event Status",
+  payment: "Payment",
+  totalPackageAmount: "Total Package Amount",
+  refundedAmount: "Refunded Amount",
+
+  servicePackage: "Service Package",
+  bartenderCount: "# of Bartenders",
+  barbackCount: "# of Barback or Additional Server",
+
+  arrivalSetupTime: "Arrival/Set Up Time",
+  barServiceStartTime: "Bar Service Start Time",
+  barServiceCloseTime: "Bar Service Close Time",
+  cleanUpOutTime: "Clean Up/Out Time",
+
+  totalGuestCount: "Total Guest Count",
+  guestsConsumingAlcohol: "Guest Consuming Alcohol (21+)",
+  totalGuestsForService: "Total # of Guest for Service",
+
+  prepaidGratuity: "Prepaid Gratuity",
+  prepaidGratuityAmount: "Prepaid Gratuity Amount (each)",
+  tipJar: "Tip Jar",
+  travelFee: "Travel Fee for C&S",
+  bartenderAssigned: "Bartender Assigned",
+
+  numberOfBars: "Number of Bars",
+  barLocation: "Bar Location",
+  waterProvidedByCheers: "Is Water Provided by Cheers",
+  glasswareProvidedByHost: "Is there a Glassware Provided by Host",
+  cheersProvidingTableSetup: "Is Cheers Providing the Table Set Up",
+  bartenderWillServe: "Bartender will Serve",
+  additionalServiceDetails: "Additional Service Details, Instructions or Notes",
+  waterResponsibility: "Other Request for non-alcoholic",
+
+  mixersPackageAmount: "Mixers Package Amount",
+  cocktailDrinkers: "Cocktail Drinkers",
+  mixerSelection: "Mixer Selection",
+  specialtyCocktail: "Specialty cocktail",
+  cocktailNotes: "Cocktail Notes/Instructions",
+
+  dirtySodaPackageAmount: "Non-Alcoholic Invoice Amount",
+  dirtySodaDrinkers: "Dirty Soda Bar Drinkers",
+  sodaSelections: "Soda Selections",
+  syrupsSodaBar: "Syrups Soda Bar",
+  creamersSodaBar: "Creamers Soda Bar",
+
+  additionalSodaJuiceInvoiceAmount: "Additional Soda/Juice Invoice Amount",
+  additionalSodaJuiceDrinkers: "Additional Soda/Juice Drinkers",
+  additionalSodaSelections: "Additional Soda Selections",
+  additionalJuiceSelections: "Additional Juice Selections",
+
+  isOtherAddOns: "Is there Other Add-Ons",
+  otherAddOnsBudget: "Other Add-Ons Budget",
+  waterDispenser: "Water Dispenser",
+  extraWaterCups: "Extra Water Cups (pcs)",
+  tableSideWineServiceInstructions: "Table Side Wine Service Instructions",
+  extraWineCups: "Extra Wine Cups (pcs)",
+  extraBeerCups: "Extra Beer Cups (pcs)",
+  extraBagsOfIce: "Extra Bags of Ice",
+  champagneToastInstructions: "Champagne Toast Instructions",
+  champagneFlutes: "Champagne Flutes (Disposable)",
+  shotGlasses: "Shot Glasses (Disposable)",
+  tableLinens: "Table & Linens",
+  otherAddOnsNotes: "Any Other Notes for Other Add-Ons",
+
+  liquorBudget: "Liquor Budget",
+  liquorQty: "Liquor Qty",
+  wineBudget: "Wine Budget",
+  wineQty: "Wine Qty",
+  wineDrinkingGuests: "Wine Drinking Guests",
+  beerBudget: "Beer Budget",
+  beerSeltzerQty: "Beer/Seltzer Qty",
+  beerSeltzerDrinkingGuests: "Beer/Seltzer Drinking Guests",
+});
+
+/* =========================================================
+   CHANGE LOG — CREATE
+
+   One database row = one field-level requested change.
+========================================================= */
+
+const changeLogFields = q.select({
+  name: "Name",
+  changeOrderId: "Change Order ID",
+  beverageConfigurationRecordId: "Beverage Configuration Record ID",
+  projectName: "Project Name",
+  eventDate: "Event Date",
+  eventLocation: "Event Location",
+  fieldGroup: "Field Group",
+  fieldChanged: "Field Changed",
+  previousValue: "Previous Value",
+  requestedValue: "Requested Value",
+  changeReason: "Change Reason",
+  requestedBy: "Requested By",
+  changeStatus: "Change Status",
+});
+
+/* =========================================================
+   FINAL DETAILS FIELD CATALOG
+========================================================= */
+
+const FINAL_DETAILS_SECTIONS = [
+  {
+    stage: "Event Snapshot",
+    title: "Event Snapshot",
+    description: "Core event, venue, timing, service selection, and contracted package amount.",
+    fields: [
+      ["eventStatus", "Event Status"],
+      ["eventType", "Event Type"],
+      ["eventDate", "Event Date"],
+      ["eventLocation", "Event Location"],
+      ["venuePartner", "Venue Partner"],
+      ["ceremonyTime", "Ceremony Time"],
+      ["barServiceStartTime", "Bar Opens"],
+      ["barServiceCloseTime", "Bar Closes"],
+      ["cleanUpOutTime", "Cleanup / Out"],
+      ["servicePackage", "Service Package"],
+      ["totalPackageAmount", "Total Package Amount"],
+    ],
+  },
+
+  {
+    stage: "People",
+    title: "People",
+    description: "Primary client contact and day-of contact information.",
+    fields: [
+      ["eventHostName", "Event Host Name"],
+      ["contactEmail", "Contact Email"],
+      ["contactPhone", "Contact Phone"],
+      ["secondaryContactName", "Secondary / Day-of Contact Name"],
+      ["secondaryContactPhone", "Secondary / Day-of Contact Phone"],
+    ],
+  },
+
+  {
+    stage: "Guests & Staffing",
+    title: "Guest & Service Breakdown",
+    description: "Guest counts, gratuity, travel, tip handling, and assigned bartender.",
+    fields: [
+      ["totalGuestCount", "Total Guest Count"],
+      ["guestsConsumingAlcohol", "Guests Consuming Alcohol (21+)"],
+      ["totalGuestsForService", "Total Guests for Service"],
+      ["prepaidGratuity", "Prepaid Gratuity"],
+      ["prepaidGratuityAmount", "Prepaid Gratuity Amount / Staff"],
+      ["tipJar", "Tip Jar"],
+      ["travelFee", "Travel Fee / Staff"],
+      ["bartenderAssigned", "Bartender Assigned"],
+    ],
+  },
+
+  {
+    stage: "Package Plan",
+    title: "Mixers",
+    description: "Cocktail mixer package details from Final Details.",
+    fields: [
+      ["mixersPackageAmount", "Mixers Package Budget"],
+      ["cocktailDrinkers", "Cocktail Drinkers"],
+      ["mixerSelection", "Mixer Selection"],
+      ["specialtyCocktail", "Specialty Cocktail"],
+      ["cocktailNotes", "Cocktail Notes / Instructions"],
+    ],
+  },
+
+  {
+    stage: "Package Plan",
+    title: "Dirty Soda Bar",
+    description: "Dirty Soda package amount, drinkers, sodas, syrups, and creamer.",
+    fields: [
+      ["dirtySodaPackageAmount", "Dirty Soda Bar Package Budget"],
+      ["dirtySodaDrinkers", "Dirty Soda Bar Drinkers"],
+      ["sodaSelections", "Soda Selections"],
+      ["syrupsSodaBar", "Syrup Selection"],
+      ["creamersSodaBar", "Creamer Selection"],
+    ],
+  },
+
+  {
+    stage: "Package Plan",
+    title: "Soda / Juice",
+    description: "Additional non-alcoholic beverage add-on details.",
+    fields: [
+      ["additionalSodaJuiceInvoiceAmount", "Additional Soda/Juice Invoice Amount"],
+      ["additionalSodaJuiceDrinkers", "Additional Soda/Juice Drinkers"],
+      ["additionalSodaSelections", "Soda Selections"],
+      ["additionalJuiceSelections", "Juice Selection"],
+    ],
+  },
+
+  {
+    stage: "Package Plan",
+    title: "Other Add Ons",
+    description: "Optional service supplies and special service add-ons.",
+    fields: [
+      ["isOtherAddOns", "Is There Other Add Ons?"],
+      ["otherAddOnsBudget", "Other Add-Ons Budget"],
+      ["waterDispenser", "Water Dispenser with Cups — Guest Count"],
+      ["extraWaterCups", "Extra Water Cups"],
+      ["extraWineCups", "Extra Wine Cups"],
+      ["extraBeerCups", "Extra Beer Cups"],
+      ["extraBagsOfIce", "Extra Ice (Wine / Beer / Water)"],
+      ["champagneFlutes", "Champagne Flutes (Disposable)"],
+      ["shotGlasses", "Shot Glasses (Disposable)"],
+      ["tableSideWineServiceInstructions", "Table Side Wine Service Instructions"],
+      ["champagneToastInstructions", "Champagne Toast Instructions"],
+      ["otherAddOnsNotes", "Any Other Notes for Other Add-Ons"],
+    ],
+  },
+
+  {
+    stage: "Package Plan",
+    title: "Alcohol Procurement",
+    description: "Alcohol budgets, quantities, and category-specific drinking guest counts.",
+    fields: [
+      ["liquorBudget", "Total Budget for Liquor"],
+      ["liquorQty", "Liquor Quantity"],
+      ["wineBudget", "Total Budget for Wine"],
+      ["wineQty", "Wine Quantity"],
+      ["wineDrinkingGuests", "Wine Drinking Guests"],
+      ["beerBudget", "Total Budget for Beer / Seltzer"],
+      ["beerSeltzerQty", "Beer / Seltzer Quantity"],
+      ["beerSeltzerDrinkingGuests", "Beer / Seltzer Drinking Guests"],
+    ],
+  },
+
+  {
+    stage: "Bar Execution",
+    title: "Bar Details",
+    description: "Physical bar setup, water, glassware, table/linen plan, and bartender service scope.",
+    fields: [
+      ["numberOfBars", "Number of Bars"],
+      ["barLocation", "Bar Location"],
+      ["waterProvidedByCheers", "Is Water Provided by Cheers"],
+      ["glasswareProvidedByHost", "Glassware Being Used / Provided by Host"],
+      ["cheersProvidingTableSetup", "Cheers Providing the Table Set Up"],
+      ["waterResponsibility", "Who Is Responsible for Water?"],
+      ["tableLinens", "Bar Table & Linen Plan"],
+      ["bartenderWillServe", "Bartender Will Serve"],
+      ["additionalServiceDetails", "Additional Service Details, Instructions or Notes"],
+    ],
+  },
+];
+
+const FINAL_DETAILS_FIELDS = FINAL_DETAILS_SECTIONS.flatMap(
+  (section) =>
+    section.fields.map(([key, label]) => ({
+      stage: section.stage,
+      group: section.title,
+      key,
+      label,
+    }))
+);
+
+const CHANGE_ORDER_STAGES = [
+  "All",
+  "Event Snapshot",
+  "People",
+  "Guests & Staffing",
+  "Package Plan",
+  "Bar Execution",
+];
+
+/* =========================================================
+   HELPERS
+========================================================= */
+
+function text(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+
+  if (Array.isArray(value)) {
+    return value.map((item) => text(item)).filter(Boolean).join(", ");
+  }
+
+  if (typeof value === "object") {
+    if (value.label) return text(value.label);
+    if (value.name) return text(value.name);
+    if (value.title) return text(value.title);
+    if (value.value !== undefined) return text(value.value);
+  }
+
+  return "";
+}
+
+function readRecordIdFromUrl() {
+  if (typeof window === "undefined") return "";
+
+  const params = new URLSearchParams(window.location.search);
+
+  return (
+    params.get("recordId") ||
+    params.get("beverageRecordId") ||
+    ""
+  ).trim();
+}
+
+function flattenPages(data) {
+  return data?.pages?.flatMap((page) => page.items || []) || [];
+}
+
+function generateChangeOrderId() {
+  const now = new Date();
+  const stamp = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+  ].join("");
+
+  const suffix = Math.random().toString(36).slice(2, 6).toUpperCase();
+  return `CO-${stamp}-${suffix}`;
+}
+
+function dateText(value) {
+  const raw = text(value).trim();
+  if (!raw) return "";
+
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return match ? `${match[1]}-${match[2]}-${match[3]}` : raw;
+}
+
+function currentUserText(user) {
+  return text(user?.name) || text(user?.fullName) || text(user?.email);
+}
+
+function normalized(value) {
+  return text(value).trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+/* =========================================================
+   MAIN
+========================================================= */
+
+export default function Block() {
+  const currentUser = useCurrentUser();
+  const urlRecordId = readRecordIdFromUrl();
+
+  const [selectedRecordId, setSelectedRecordId] = useState(urlRecordId);
+  const [eventSearch, setEventSearch] = useState("");
+  const [showEventSearch, setShowEventSearch] = useState(!urlRecordId);
+  const [fieldSearch, setFieldSearch] = useState("");
+  const [activeGroup, setActiveGroup] = useState("All");
+  const [changes, setChanges] = useState({});
+  const [changeReason, setChangeReason] = useState("");
+  const [requestedBy, setRequestedBy] = useState(currentUserText(currentUser));
+  const [submitting, setSubmitting] = useState(false);
+  const [lastSubmittedOrder, setLastSubmittedOrder] = useState(null);
+
+  useEffect(() => {
+    const label = currentUserText(currentUser);
+    if (label && !requestedBy) setRequestedBy(label);
+  }, [currentUser, requestedBy]);
+
+  /* Friendly labels for multi/select fields */
+  const { options: servicePackageOptions = [] } = useFieldOptions({
+    from: ds.beverageConfig,
+    select: beverageFields,
+    field: "servicePackage",
+  });
+
+  const { options: eventStatusOptions = [] } = useFieldOptions({
+    from: ds.beverageConfig,
+    select: beverageFields,
+    field: "eventStatus",
+  });
+
+  const servicePackageLabels = useMemo(
+    () => Object.fromEntries(
+      servicePackageOptions.map((option) => [String(option.id), option.label])
+    ),
+    [servicePackageOptions]
+  );
+
+  const eventStatusLabels = useMemo(
+    () => Object.fromEntries(
+      eventStatusOptions.map((option) => [String(option.id), option.label])
+    ),
+    [eventStatusOptions]
+  );
+
+  /* Selected Beverage Configuration */
+  const {
+    data: selectedEvent,
+    status: selectedEventStatus,
+    error: selectedEventError,
+  } = useRecord({
+    from: ds.beverageConfig,
+    select: beverageFields,
+    recordId: selectedRecordId || null,
+  });
+
+  const selectedFields = selectedEvent?.fields || {};
+  const projectName = text(selectedFields.projectName).trim();
+  const eventDate = dateText(selectedFields.eventDate);
+  const eventLocation = text(selectedFields.eventLocation).trim();
+
+  /* Manual event search */
+  const eventSearchReady = eventSearch.trim().length >= 2;
+
+  const {
+    data: searchData,
+    status: searchStatus,
+    error: searchError,
+    isFetching: searchFetching,
+  } = useRecords({
+    from: ds.beverageConfig,
+    select: beverageFields,
+    where: eventSearchReady
+      ? q.or(
+          q.text("projectName").contains(eventSearch.trim()),
+          q.text("eventHostName").contains(eventSearch.trim()),
+          q.text("eventLocation").contains(eventSearch.trim())
+        )
+      : q.text("projectName").is("__NO_CHANGE_ORDER_SEARCH__"),
+    count: 12,
+    enabled: eventSearchReady,
+  });
+
+  const searchResults = useMemo(() => flattenPages(searchData), [searchData]);
+
+  function selectEvent(record) {
+    if (!record?.id) return;
+
+    const id = String(record.id);
+    setSelectedRecordId(id);
+    setChanges({});
+    setLastSubmittedOrder(null);
+    setShowEventSearch(false);
+
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.set("recordId", id);
+      window.history.replaceState({}, "", url.toString());
+    }
+  }
+
+  function clearSelectedEvent() {
+    setSelectedRecordId("");
+    setChanges({});
+    setLastSubmittedOrder(null);
+    setShowEventSearch(true);
+
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("recordId");
+      window.history.replaceState({}, "", url.toString());
+    }
+  }
+
+  function displayValue(key, rawValue) {
+    if (key === "servicePackage") {
+      const values = Array.isArray(rawValue)
+        ? rawValue
+        : text(rawValue).split(",").map((item) => item.trim()).filter(Boolean);
+
+      const labels = values.map(
+        (value) => servicePackageLabels[String(value)] || text(value)
+      );
+
+      return labels.filter(Boolean).join(", ") || "Not set";
+    }
+
+    if (key === "eventStatus") {
+      const value = text(rawValue);
+      return eventStatusLabels[value] || value || "Not set";
+    }
+
+    if (key === "eventDate") return dateText(rawValue) || "Not set";
+
+    return text(rawValue).trim() || "Not set";
+  }
+
+  function updateRequestedValue(field, value) {
+    setChanges((current) => {
+      const existing = current[field.key] || {
+        selected: false,
+        requestedValue: "",
+      };
+
+      return {
+        ...current,
+        [field.key]: {
+          ...existing,
+          requestedValue: value,
+          selected: value.trim() ? true : existing.selected,
+        },
+      };
+    });
+  }
+
+  function toggleField(field, selected) {
+    setChanges((current) => {
+      const existing = current[field.key] || {
+        selected: false,
+        requestedValue: "",
+      };
+
+      return {
+        ...current,
+        [field.key]: {
+          ...existing,
+          selected,
+        },
+      };
+    });
+  }
+
+  const filteredFields = useMemo(() => {
+    const search = fieldSearch.trim().toLowerCase();
+
+    return FINAL_DETAILS_FIELDS.filter((field) => {
+      const stageMatch =
+        activeGroup === "All" ||
+        field.stage === activeGroup;
+
+      const textMatch =
+        !search ||
+        field.label.toLowerCase().includes(search) ||
+        field.group.toLowerCase().includes(search) ||
+        field.stage.toLowerCase().includes(search);
+
+      return stageMatch && textMatch;
+    });
+  }, [activeGroup, fieldSearch]);
+
+  const filteredSections = useMemo(() => {
+    const visibleKeys = new Set(
+      filteredFields.map((field) => field.key)
+    );
+
+    return FINAL_DETAILS_SECTIONS
+      .map((section) => ({
+        ...section,
+        fields: section.fields
+          .map(([key, label]) => ({
+            stage: section.stage,
+            group: section.title,
+            key,
+            label,
+          }))
+          .filter((field) =>
+            visibleKeys.has(field.key)
+          ),
+      }))
+      .filter((section) => section.fields.length > 0);
+  }, [filteredFields]);
+
+  const selectedChanges = useMemo(() => {
+    if (!selectedEvent) return [];
+
+    return FINAL_DETAILS_FIELDS.map((field) => {
+      const change = changes[field.key];
+      if (!change?.selected) return null;
+
+      const requestedValue = text(change.requestedValue).trim();
+      if (!requestedValue) return null;
+
+      const currentValue = displayValue(field.key, selectedFields[field.key]);
+
+      if (normalized(currentValue) === normalized(requestedValue)) return null;
+
+      return {
+        ...field,
+        currentValue,
+        requestedValue,
+      };
+    }).filter(Boolean);
+  }, [
+    changes,
+    selectedEvent,
+    selectedFields,
+    servicePackageLabels,
+    eventStatusLabels,
+  ]);
+
+  /* Change Log create hook */
+  const createChangeLog = useRecordCreate({
+    from: ds.changeLog,
+    fields: changeLogFields,
+  });
+
+  async function submitChangeOrder() {
+    if (!selectedRecordId) {
+      toast.error("Select the Beverage Configuration event first.");
+      return;
+    }
+
+    if (!selectedChanges.length) {
+      toast.error("Enter at least one requested change.");
+      return;
+    }
+
+    if (!changeReason.trim()) {
+      toast.error("Add a short reason for the change order.");
+      return;
+    }
+
+    if (!requestedBy.trim()) {
+      toast.error("Identify who requested or entered the change order.");
+      return;
+    }
+
+    if (!createChangeLog.enabled) {
+      toast.error(
+        "Beverage Configuration Change Log is not ready. Check the datasource ID, field mapping, and permissions."
+      );
+      return;
+    }
+
+    const changeOrderId = generateChangeOrderId();
+    setSubmitting(true);
+
+    let created = 0;
+
+    try {
+      for (const item of selectedChanges) {
+        await createChangeLog.mutateAsync({
+          name: `${changeOrderId} · ${item.group} · ${item.label}`,
+          changeOrderId,
+          beverageConfigurationRecordId: selectedRecordId,
+          projectName: projectName || "Unnamed Event",
+          eventDate,
+          eventLocation,
+          fieldGroup: item.group,
+          fieldChanged: item.label,
+          previousValue: item.currentValue,
+          requestedValue: item.requestedValue,
+          changeReason: changeReason.trim(),
+          requestedBy: requestedBy.trim(),
+          changeStatus: "Requested",
+        });
+
+        created += 1;
+      }
+
+      setLastSubmittedOrder({ id: changeOrderId, count: created });
+      setChanges({});
+      setChangeReason("");
+
+      toast.success(
+        `${changeOrderId} created with ${created} change${created === 1 ? "" : "s"}.`
+      );
+    } catch (error) {
+      console.error("[Beverage Change Order] Submit failed:", error);
+      toast.error(
+        error?.message ||
+          `Created ${created} of ${selectedChanges.length} Change Log rows before submission stopped.`
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const selectedLoading =
+    selectedEventStatus === "pending" || selectedEventStatus === "loading";
+
+  return (
+    <div className="min-h-screen bg-[#F4F2ED] text-[#201E1A]">
+      <div className="container py-5 sm:py-7">
+        <div className="content mx-auto max-w-[1380px]">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => window.history.back()}
+            >
+              <ArrowLeft className="mr-2 h-4 w-4" />
+              Back
+            </Button>
+
+            <Badge
+              variant="outline"
+              className="border-[#D7C7AA] bg-[#FBF7EE] text-[#765F3A]"
+            >
+              <FilePenLine className="mr-1 h-3.5 w-3.5" />
+              Change Log Only
+            </Badge>
+          </div>
+
+          <section className="overflow-hidden rounded-[28px] bg-[#191815] text-white shadow-xl">
+            <div className="p-6 sm:p-8">
+              <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#D6B678]">
+                    Beverage Configuration
+                  </p>
+
+                  <h1 className="mt-2 text-3xl font-semibold tracking-[-0.035em] sm:text-4xl">
+                    Create Change Order
+                  </h1>
+
+                  <p className="mt-2 max-w-2xl text-sm leading-6 text-white/55">
+                    Select the same editable fields used in Final Details, compare the confirmed value against the requested change, and submit the request to the Change Log. The live Beverage Configuration record is not edited here.
+                  </p>
+                </div>
+
+                <div className="rounded-xl border border-white/10 bg-white/[0.05] px-4 py-3">
+                  <p className="text-[10px] uppercase tracking-[0.08em] text-white/40">
+                    Changes Ready
+                  </p>
+                  <p className="mt-1 text-2xl font-semibold">{selectedChanges.length}</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="h-1.5 bg-[#B98A46]" />
+          </section>
+
+          <section className="mt-5 rounded-[22px] border border-[#E4DED4] bg-white p-4 shadow-sm sm:p-5">
+            {selectedRecordId && selectedLoading ? (
+              <div className="flex items-center gap-2 p-3 text-sm text-[#756D62]">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading Beverage Configuration...
+              </div>
+            ) : selectedRecordId && selectedEventStatus === "error" ? (
+              <div className="rounded-xl border border-red-200 bg-red-50 p-4">
+                <div className="flex items-start gap-3">
+                  <CircleAlert className="mt-0.5 h-5 w-5 shrink-0 text-red-600" />
+                  <div>
+                    <p className="font-semibold text-red-900">
+                      Unable to load this Beverage Configuration
+                    </p>
+                    <p className="mt-1 text-xs text-red-700">
+                      {selectedEventError?.message ||
+                        "Check the recordId and Beverage Configuration datasource connection."}
+                    </p>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="mt-3 bg-white"
+                      onClick={clearSelectedEvent}
+                    >
+                      Select another event
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            ) : selectedEvent && !showEventSearch ? (
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100">
+                      <Check className="mr-1 h-3.5 w-3.5" />
+                      Event selected
+                    </Badge>
+                    {eventDate && (
+                      <span className="text-xs text-[#81786D]">{eventDate}</span>
+                    )}
+                  </div>
+
+                  <h2 className="mt-2 truncate text-xl font-semibold">
+                    {projectName || "Unnamed Beverage Configuration"}
+                  </h2>
+
+                  <p className="mt-1 truncate text-sm text-[#81786D]">
+                    {[eventLocation, text(selectedFields.eventHostName)]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </p>
+
+                  <p className="mt-1 text-[10px] text-[#A0978B]">
+                    Record ID: {selectedRecordId}
+                  </p>
+                </div>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setShowEventSearch(true)}
+                >
+                  Change event
+                </Button>
+              </div>
+            ) : (
+              <div>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="font-semibold">Select Beverage Configuration</p>
+                    <p className="mt-1 text-xs text-[#81786D]">
+                      The recordId in the URL loads automatically. Otherwise search by project, host, or venue.
+                    </p>
+                  </div>
+
+                  {selectedRecordId && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setShowEventSearch(false)}
+                    >
+                      <X className="mr-1 h-4 w-4" />
+                      Cancel
+                    </Button>
+                  )}
+                </div>
+
+                <div className="relative mt-4">
+                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#958C80]" />
+                  <Input
+                    value={eventSearch}
+                    onChange={(event) => setEventSearch(event.target.value)}
+                    placeholder="Search project, host, or venue..."
+                    className="h-11 pl-10"
+                  />
+                  {searchFetching && (
+                    <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-[#958C80]" />
+                  )}
+                </div>
+
+                <div className="mt-2 overflow-hidden rounded-xl border border-[#E5E0D7]">
+                  {!eventSearchReady ? (
+                    <div className="bg-[#FAF8F4] p-4 text-xs text-[#81786D]">
+                      Type at least 2 characters to search.
+                    </div>
+                  ) : searchStatus === "error" ? (
+                    <div className="bg-red-50 p-4 text-xs text-red-800">
+                      {searchError?.message || "Unable to search Beverage Configuration."}
+                    </div>
+                  ) : searchFetching ? (
+                    <div className="flex items-center gap-2 bg-[#FAF8F4] p-4 text-xs text-[#81786D]">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Searching...
+                    </div>
+                  ) : searchResults.length ? (
+                    <div className="divide-y divide-[#ECE7DF]">
+                      {searchResults.map((record) => {
+                        const fields = record?.fields || {};
+
+                        return (
+                          <button
+                            key={record.id}
+                            type="button"
+                            onClick={() => selectEvent(record)}
+                            className="flex w-full items-center justify-between gap-4 bg-white px-4 py-3 text-left transition hover:bg-[#FAF8F4]"
+                          >
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-semibold">
+                                {text(fields.projectName) || "Unnamed Event"}
+                              </p>
+                              <p className="mt-0.5 truncate text-xs text-[#81786D]">
+                                {[
+                                  dateText(fields.eventDate),
+                                  text(fields.eventLocation),
+                                  text(fields.eventHostName),
+                                ]
+                                  .filter(Boolean)
+                                  .join(" · ")}
+                              </p>
+                            </div>
+                            <span className="text-xs font-semibold text-[#A07943]">
+                              Select
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="bg-[#FAF8F4] p-4 text-xs text-[#81786D]">
+                      No matching Beverage Configuration records.
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </section>
+
+          {selectedEvent && (
+            <>
+              <section className="mt-5 rounded-[22px] border border-[#E4DED4] bg-white p-4 shadow-sm sm:p-5">
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div>
+                    <label className="mb-2 block text-[10px] font-bold uppercase tracking-[0.08em] text-[#756D62]">
+                      Change Reason
+                    </label>
+                    <textarea
+                      value={changeReason}
+                      onChange={(event) => setChangeReason(event.target.value)}
+                      rows={3}
+                      placeholder="Why is this change being requested?"
+                      className="w-full resize-y rounded-xl border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-[10px] font-bold uppercase tracking-[0.08em] text-[#756D62]">
+                      Requested / Entered By
+                    </label>
+                    <div className="flex gap-2">
+                      <Input
+                        value={requestedBy}
+                        onChange={(event) => setRequestedBy(event.target.value)}
+                        placeholder="Name"
+                      />
+                      {currentUserText(currentUser) && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => setRequestedBy(currentUserText(currentUser))}
+                        >
+                          <UserRound className="mr-2 h-4 w-4" />
+                          Me
+                        </Button>
+                      )}
+                    </div>
+
+                    <div className="mt-3 rounded-xl bg-[#F7F5F0] px-3 py-2.5 text-xs leading-5 text-[#81786D]">
+                      This page logs the request only. It does not apply the change to the live event.
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section className="mt-5 rounded-[22px] border border-[#E4DED4] bg-white p-3 shadow-sm">
+                <div className="flex flex-col gap-3">
+                  <div className="relative min-w-0">
+                    <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#958C80]" />
+
+                    <Input
+                      value={fieldSearch}
+                      onChange={(event) =>
+                        setFieldSearch(event.target.value)
+                      }
+                      placeholder="Find a Final Details field..."
+                      className="h-10 pl-10"
+                    />
+                  </div>
+
+                  <div className="flex gap-1 overflow-x-auto rounded-xl bg-[#F4F1EB] p-1">
+                    {CHANGE_ORDER_STAGES.map((stage) => (
+                      <button
+                        key={stage}
+                        type="button"
+                        onClick={() => setActiveGroup(stage)}
+                        className={`whitespace-nowrap rounded-lg px-3 py-2 text-[11px] font-semibold transition ${
+                          activeGroup === stage
+                            ? "bg-white text-[#211F1B] shadow-sm"
+                            : "text-[#776F64] hover:text-[#211F1B]"
+                        }`}
+                      >
+                        {stage}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </section>
+
+              <div className="mt-4 space-y-4">
+                {filteredSections.map((section) => (
+                  <section
+                    key={`${section.stage}-${section.title}`}
+                    className="overflow-hidden rounded-[22px] border border-[#DED8CF] bg-white shadow-sm"
+                  >
+                    <div className="border-b border-[#E8E3DA] bg-[#FAF8F4] px-4 py-4 sm:px-5">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                        <div>
+                          <p className="text-[9px] font-bold uppercase tracking-[0.09em] text-[#A07943]">
+                            {section.stage}
+                          </p>
+
+                          <h3 className="mt-1 text-base font-semibold">
+                            {section.title}
+                          </h3>
+
+                          <p className="mt-1 max-w-2xl text-xs leading-5 text-[#81786D]">
+                            {section.description}
+                          </p>
+                        </div>
+
+                        <Badge
+                          variant="outline"
+                          className="w-fit bg-white"
+                        >
+                          {
+                            section.fields.filter(
+                              (field) =>
+                                selectedChanges.some(
+                                  (change) =>
+                                    change.key === field.key
+                                )
+                            ).length
+                          }{" "}
+                          selected
+                        </Badge>
+                      </div>
+                    </div>
+
+                    <div className="hidden grid-cols-[220px_minmax(0,1fr)_minmax(0,1.3fr)_76px] border-b border-[#ECE7DF] bg-[#F7F5F0] px-4 py-2.5 text-[9px] font-bold uppercase tracking-[0.08em] text-[#8C8378] lg:grid">
+                      <span>Final Details Field</span>
+                      <span>Current Value</span>
+                      <span>Requested Change</span>
+                      <span className="text-center">Include</span>
+                    </div>
+
+                    <div className="divide-y divide-[#ECE7DF]">
+                      {section.fields.map((field) => {
+                        const currentValue = displayValue(
+                          field.key,
+                          selectedFields[field.key]
+                        );
+
+                        const row = changes[field.key] || {
+                          selected: false,
+                          requestedValue: "",
+                        };
+
+                        const requested =
+                          row.requestedValue || "";
+
+                        const unchanged =
+                          requested.trim() &&
+                          normalized(currentValue) ===
+                            normalized(requested);
+
+                        return (
+                          <div
+                            key={field.key}
+                            className={`grid gap-3 px-4 py-4 lg:grid-cols-[220px_minmax(0,1fr)_minmax(0,1.3fr)_76px] lg:items-start ${
+                              row.selected &&
+                              requested.trim() &&
+                              !unchanged
+                                ? "bg-amber-50/40"
+                                : "bg-white"
+                            }`}
+                          >
+                            <div className="min-w-0">
+                              <p className="text-sm font-semibold">
+                                {field.label}
+                              </p>
+                            </div>
+
+                            <div className="min-w-0">
+                              <p className="mb-1 text-[9px] font-bold uppercase tracking-[0.07em] text-[#9A9084] lg:hidden">
+                                Current Value
+                              </p>
+
+                              <div className="min-h-[42px] rounded-xl bg-[#F7F5F0] px-3 py-2.5 text-sm leading-5 text-[#5E574F]">
+                                {currentValue}
+                              </div>
+                            </div>
+
+                            <div>
+                              <p className="mb-1 text-[9px] font-bold uppercase tracking-[0.07em] text-[#9A9084] lg:hidden">
+                                Requested Change
+                              </p>
+
+                              <textarea
+                                value={requested}
+                                onChange={(event) =>
+                                  updateRequestedValue(
+                                    field,
+                                    event.target.value
+                                  )
+                                }
+                                rows={
+                                  [
+                                    "bartenderWillServe",
+                                    "additionalServiceDetails",
+                                    "cocktailNotes",
+                                    "tableSideWineServiceInstructions",
+                                    "champagneToastInstructions",
+                                    "otherAddOnsNotes",
+                                  ].includes(field.key)
+                                    ? 3
+                                    : 2
+                                }
+                                placeholder="Enter exact requested change..."
+                                className={`w-full resize-y rounded-xl border bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring ${
+                                  unchanged
+                                    ? "border-amber-300"
+                                    : "border-input"
+                                }`}
+                              />
+
+                              {unchanged && (
+                                <p className="mt-1 text-[10px] font-semibold text-amber-700">
+                                  Requested value matches the current value.
+                                </p>
+                              )}
+                            </div>
+
+                            <div className="flex items-center justify-between lg:justify-center">
+                              <span className="text-[9px] font-bold uppercase tracking-[0.07em] text-[#9A9084] lg:hidden">
+                                Include
+                              </span>
+
+                              <input
+                                type="checkbox"
+                                checked={Boolean(row.selected)}
+                                onChange={(event) =>
+                                  toggleField(
+                                    field,
+                                    event.target.checked
+                                  )
+                                }
+                                className="h-5 w-5 rounded border-[#CFC8BC]"
+                              />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
+                ))}
+
+                {!filteredSections.length && (
+                  <section className="rounded-[22px] border border-[#DED8CF] bg-white p-8 text-center text-sm text-[#81786D] shadow-sm">
+                    No Final Details fields match this filter.
+                  </section>
+                )}
+              </div>
+
+              {selectedChanges.length > 0 && (
+                <section className="mt-5 rounded-[22px] border border-[#D9C9AB] bg-[#FBF7EE] p-4 shadow-sm sm:p-5">
+                  <div className="flex items-start gap-3">
+                    <ClipboardList className="mt-0.5 h-5 w-5 shrink-0 text-[#9B7540]" />
+                    <div className="min-w-0 flex-1">
+                      <p className="font-semibold">Change Order Review</p>
+                      <p className="mt-1 text-xs text-[#81786D]">
+                        These are the Change Log rows that will be created.
+                      </p>
+
+                      <div className="mt-4 space-y-2">
+                        {selectedChanges.map((item) => (
+                          <div
+                            key={item.key}
+                            className="rounded-xl border border-[#E2D5BF] bg-white px-3 py-3"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="text-sm font-semibold">{item.label}</p>
+                              <span className="text-[9px] font-bold uppercase tracking-[0.07em] text-[#A07943]">
+                                {item.group}
+                              </span>
+                            </div>
+
+                            <div className="mt-2 grid gap-2 text-xs sm:grid-cols-2">
+                              <div className="rounded-lg bg-[#F7F5F0] px-3 py-2">
+                                <span className="font-semibold text-[#81786D]">
+                                  Current:
+                                </span>{" "}
+                                {item.currentValue}
+                              </div>
+                              <div className="rounded-lg bg-amber-50 px-3 py-2 text-amber-950">
+                                <span className="font-semibold">Change to:</span>{" "}
+                                {item.requestedValue}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              )}
+
+              {lastSubmittedOrder && (
+                <section className="mt-5 rounded-[22px] border border-emerald-200 bg-emerald-50 p-5 text-emerald-950 shadow-sm">
+                  <CheckCircle2 className="h-6 w-6 text-emerald-700" />
+                  <p className="mt-2 font-semibold">Change Order Created</p>
+                  <p className="mt-1 text-sm">
+                    {lastSubmittedOrder.id} created {lastSubmittedOrder.count}{" "}
+                    Change Log record{lastSubmittedOrder.count === 1 ? "" : "s"}.
+                  </p>
+                </section>
+              )}
+
+              <div className="sticky bottom-3 z-30 mt-5">
+                <div className="flex flex-col gap-3 rounded-2xl bg-[#191815] p-4 text-white shadow-2xl sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold">
+                      {selectedChanges.length
+                        ? `${selectedChanges.length} change${
+                            selectedChanges.length === 1 ? "" : "s"
+                          } ready to log`
+                        : "Enter the requested changes above"}
+                    </p>
+                    <p className="mt-1 text-xs text-white/45">
+                      Beverage Configuration stays unchanged until a separate approval/apply workflow updates it.
+                    </p>
+                  </div>
+
+                  <Button
+                    type="button"
+                    onClick={submitChangeOrder}
+                    disabled={
+                      submitting ||
+                      selectedChanges.length === 0 ||
+                      !changeReason.trim() ||
+                      !requestedBy.trim() ||
+                      !createChangeLog.enabled
+                    }
+                    className="bg-[#D6B678] text-[#171613] hover:bg-[#E4C992]"
+                  >
+                    {submitting ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Send className="mr-2 h-4 w-4" />
+                    )}
+                    Create Change Order
+                  </Button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
