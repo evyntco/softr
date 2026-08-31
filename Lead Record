@@ -1,0 +1,628 @@
+import React, { useMemo, useState } from "react";
+
+import { datasource, q, useRecords } from "@/lib/datasource";
+import { useNavigationSetting } from "@/lib/editable-settings";
+import { NavigationAction } from "@/components/navigation-action";
+
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  Search,
+  Users,
+  Calendar,
+  ArrowUpDown,
+  ArrowUpRight,
+  X,
+} from "lucide-react";
+
+/* =========================================================
+   DATA SOURCE
+
+   leadForm was already defined here but never queried — this
+   page was pulling Beverage Configuration instead, which has
+   no Lead Record ID to link back with. Rebuilt around the
+   source that actually has what /lead-record needs.
+========================================================= */
+
+const ds = datasource.define({
+  leadForm: "a340adc6-d007-426c-af60-0a8b7e5121f9",
+});
+
+const leadFields = q.select({
+  hostName: "Event Host Name",
+  contactEmail: "Contact Email",
+  contactPhone: "Contact Phone",
+  eventLocation: "Event Location",
+  eventDate: "Event Date",
+  eventType: "Event Type",
+  services: "Services you are considering that we provide",
+  leadStatus: "Lead Status",
+  workspaceToken: "Workspace Token",
+  leadRecordId: "Lead Record ID",
+  totalGuests: "Estimated Total Guest Count",
+});
+
+const SERVICE_CATEGORIES = [
+  "Bartender Service for Alcoholic or Non-Alcoholic Drinks",
+  "Mixers with Supplies",
+  "Non-Alcoholic Drinks with Supplies",
+  "Others (Champagne Toast/Table and Linens/Table Side Service/Etc)",
+];
+
+/* =========================================================
+   SMALL COMPONENTS
+    danger: "border-red-200 bg-red-50 text-red-700",
+  };
+  return (
+    <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold ${toneClasses[tone] || toneClasses.default}`}>
+      {value || "—"}
+    </span>
+  );
+}
+
+function toneForLeadStatus(status) {
+  const s = (status || "").toLowerCase();
+  if (s.includes("new")) return "new";
+  if (s.includes("booked")) return "good";
+  if (s.includes("estimate") || s.includes("progress")) return "warn";
+  if (s.includes("lost")) return "danger";
+  return "default";
+}
+
+/* =========================================================
+   OPEN LEAD BUTTON
+
+   Uses NavigationAction (same mechanism the estimator's CTA
+   button uses) instead of raw window.location — that's the
+   actual bridge that makes useNavigationSetting-driven links
+   work inside Softr's block embed. Building the destination
+   here, per-row, since each lead needs its own leadRecordId
+   appended to whatever page the setting points at.
+
+   NavigationAction owns the click/navigation behavior and
+   applies it to the real DOM element passed as its child —
+   it isn't Slot-compatible, so it must be the outer wrapper
+   with a plain <button> inside, not nested inside
+   `Button asChild` (that inversion silently drops both the
+   styling and the click handler).
+========================================================= */
+
+function OpenLeadButton({ leadRecordId, navigationSetting, size = "default" }) {
+  if (!leadRecordId) {
+    return <span className="text-xs text-[#8A8A86]">No ID</span>;
+  }
+
+  const action = navigationSetting?.action === "OPEN_URL" ? "OPEN_URL" : "OPEN_PAGE";
+  const baseDestination = navigationSetting?.destination || "/lead-record";
+  const separator = baseDestination.includes("?") ? "&" : "?";
+  const destination = `${baseDestination}${separator}leadRecordId=${encodeURIComponent(leadRecordId)}`;
+  const openIn = navigationSetting?.openIn || "SELF";
+
+  const sizeClasses = size === "sm" ? "h-7 px-2.5 text-[11px]" : "h-8 px-3 text-xs";
+
+  return (
+    <NavigationAction navigation={{ action, destination, openIn }}>
+      <button
+        type="button"
+        className={`inline-flex items-center justify-center rounded-md font-semibold text-white bg-[#9e5a3c] hover:bg-[#8a4e33] ${sizeClasses}`}
+      >
+        Open
+        <ArrowUpRight className="ml-1 h-3 w-3" />
+      </button>
+    </NavigationAction>
+  );
+}
+
+function safeArray(value) {
+  return [value];
+}
+
+function labelOf(value) {
+  return typeof value === "object" && value ? value.label ?? "" : value ?? "";
+}
+
+/* =========================================================
+   DATE HELPERS
+========================================================= */
+
+function startOfDay(d) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+function endOfDay(d) {
+  const x = new Date(d);
+  x.setHours(23, 59, 59, 999);
+  return x;
+}
+
+function getPresetRange(preset) {
+  const now = new Date();
+
+  if (preset === "this_week") {
+    const day = now.getDay();
+    const diffToMonday = (day === 0 ? -6 : 1) - day;
+    const start = startOfDay(new Date(now));
+    start.setDate(now.getDate() + diffToMonday);
+    const end = endOfDay(new Date(start));
+    end.setDate(start.getDate() + 6);
+    return [start, end];
+  }
+
+  if (preset === "this_month") {
+    const start = startOfDay(new Date(now.getFullYear(), now.getMonth(), 1));
+    const end = endOfDay(new Date(now.getFullYear(), now.getMonth() + 1, 0));
+    return [start, end];
+  }
+
+  if (preset === "next_month") {
+    const start = startOfDay(new Date(now.getFullYear(), now.getMonth() + 1, 1));
+    const end = endOfDay(new Date(now.getFullYear(), now.getMonth() + 2, 0));
+    return [start, end];
+  }
+
+  return null;
+}
+
+function parseLeadDate(str) {
+  if (!str) return null;
+  const d = new Date(str);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/* =========================================================
+   MAIN
+========================================================= */
+
+export default function Block() {
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [expanded, setExpanded] = useState(new Set());
+
+  // Event date filter
+  const [eventDatePreset, setEventDatePreset] = useState("all"); // all | this_week | this_month | next_month | custom
+  const [customStart, setCustomStart] = useState("");
+  const [customEnd, setCustomEnd] = useState("");
+
+  // Lead created date filter (Submission time)
+  const [createdStart, setCreatedStart] = useState("");
+  const [createdEnd, setCreatedEnd] = useState("");
+
+  // Service category filter (multi-select via toggle chips)
+  const [serviceFilter, setServiceFilter] = useState(new Set());
+
+  // Sort
+  const [sortBy, setSortBy] = useState("eventDate_asc");
+  // eventDate_asc | eventDate_desc | created_desc | created_asc
+
+  // Configurable in the block's settings panel — no hardcoded
+  // destination. Defaults to /lead-record but can be pointed
+  // anywhere, and supports opening in the same tab or a new one.
+  const leadRecordNavigation = useNavigationSetting({
+    name: "lead-record-page",
+    label: "Lead Record Page",
+    initialValue: {
+      action: "OPEN_PAGE",
+      destination: "/lead-record",
+      openIn: "SELF",
+    },
+  });
+
+  const { data, status, isFetching } = useRecords({
+    from: ds.leadForm,
+    select: leadFields,
+    count: 200,
+  });
+
+  const leads = useMemo(() => {
+    return data?.pages?.flatMap((page) => page.items) || [];
+  }, [data]);
+
+  const groups = useMemo(() => {
+    const map = new Map();
+    for (const lead of leads) {
+      const token = lead.fields?.workspaceToken || `untokened-${lead.id}`;
+      if (!map.has(token)) map.set(token, []);
+      map.get(token).push(lead);
+    }
+    return Array.from(map.entries()).map(([token, items]) => {
+      const sorted = [...items].sort(
+        (a, b) => new Date(b.createdTime || 0) - new Date(a.createdTime || 0)
+      );
+      return { token, items: sorted, latest: sorted[0] };
+    });
+  }, [leads]);
+
+  function toggleService(cat) {
+    setServiceFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(cat)) next.delete(cat);
+      else next.add(cat);
+      return next;
+    });
+  }
+
+  const eventDateRange = useMemo(() => {
+    if (eventDatePreset === "custom") {
+      const start = customStart ? startOfDay(new Date(customStart)) : null;
+      const end = customEnd ? endOfDay(new Date(customEnd)) : null;
+      return start || end ? [start, end] : null;
+    }
+    return getPresetRange(eventDatePreset);
+  }, [eventDatePreset, customStart, customEnd]);
+
+  const createdRange = useMemo(() => {
+    const start = createdStart ? startOfDay(new Date(createdStart)) : null;
+    const end = createdEnd ? endOfDay(new Date(createdEnd)) : null;
+    return start || end ? [start, end] : null;
+  }, [createdStart, createdEnd]);
+
+  const filteredGroups = useMemo(() => {
+    const term = search.trim().toLowerCase();
+
+    let result = groups.filter((g) => {
+      const f = g.latest.fields || {};
+
+      const matchesSearch =
+        !term ||
+        (f.hostName || "").toLowerCase().includes(term) ||
+        (f.eventLocation || "").toLowerCase().includes(term) ||
+        (f.contactEmail || "").toLowerCase().includes(term);
+
+      const statusLabel = labelOf(f.leadStatus);
+      const matchesStatus =
+        statusFilter === "all" || statusLabel.toLowerCase() === statusFilter.toLowerCase();
+
+      let matchesEventDate = true;
+      if (eventDateRange) {
+        const [start, end] = eventDateRange;
+        const eventDate = parseLeadDate(f.eventDate);
+        matchesEventDate =
+          Boolean(eventDate) &&
+          (!start || eventDate >= start) &&
+          (!end || eventDate <= end);
+      }
+
+      let matchesCreated = true;
+      if (createdRange) {
+        const [start, end] = createdRange;
+        const created = parseLeadDate(g.latest.createdTime);
+        matchesCreated =
+          Boolean(created) &&
+          (!start || created >= start) &&
+          (!end || created <= end);
+      }
+
+      let matchesService = true;
+      if (serviceFilter.size > 0) {
+        const leadServices = safeArray(f.services).map((s) => labelOf(s));
+        matchesService = leadServices.some((s) => serviceFilter.has(s));
+      }
+
+      return matchesSearch && matchesStatus && matchesEventDate && matchesCreated && matchesService;
+    });
+
+    result = [...result].sort((a, b) => {
+      const fa = a.latest.fields || {};
+      const fb = b.latest.fields || {};
+
+      if (sortBy === "eventDate_asc" || sortBy === "eventDate_desc") {
+        const da = parseLeadDate(fa.eventDate);
+        const db = parseLeadDate(fb.eventDate);
+        // Leads with no event date sort to the end regardless of direction.
+        if (!da && !db) return 0;
+        if (!da) return 1;
+        if (!db) return -1;
+        return sortBy === "eventDate_asc" ? da - db : db - da;
+      }
+
+      const ca = new Date(a.latest.createdTime || 0);
+      const cb = new Date(b.latest.createdTime || 0);
+      return sortBy === "created_desc" ? cb - ca : ca - cb;
+    });
+
+    return result;
+  }, [groups, search, statusFilter, eventDateRange, createdRange, serviceFilter, sortBy]);
+
+  function toggleExpand(token) {
+    setExpanded((prev) => {
+
+  const statusOptions = useMemo(() => {
+    const set = new Set();
+    leads.forEach((l) => {
+      const val = labelOf(l.fields?.leadStatus);
+      if (val) set.add(val);
+    });
+    return Array.from(set);
+  }, [leads]);
+
+  const activeFilterCount =
+    (statusFilter !== "all" ? 1 : 0) +
+    (eventDatePreset !== "all" ? 1 : 0) +
+    (createdRange ? 1 : 0) +
+    serviceFilter.size;
+
+  function clearFilters() {
+    setStatusFilter("all");
+    setEventDatePreset("all");
+    setCustomStart("");
+    setCustomEnd("");
+    setCreatedStart("");
+    setCreatedEnd("");
+    setServiceFilter(new Set());
+  }
+
+  if (status === "pending") {
+    return (
+      <div className="flex items-center justify-center gap-2 py-16 text-[#777773]">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Loading leads...
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-[#F7F7F5] py-6 sm:py-10">
+      <div className="container">
+                CRUE / Evynt — Internal
+              </p>
+              <h1 className="mt-2 text-3xl font-medium tracking-[-0.03em] text-[#111111]">
+                Leads
+              </h1>
+              <p className="mt-2 text-sm leading-6 text-[#777773]">
+                Every pre-promotion submission, grouped by event fingerprint. Click a row to open its record.
+              </p>
+            </div>
+          </section>
+
+          <section className="overflow-hidden rounded-2xl border border-[#E1E1DD] bg-white p-6 sm:p-8">
+            {/* SEARCH + STATUS + SORT */}
+            <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center">
+              <div className="relative flex-1">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8A86]" />
+                <Input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search host, venue, or email..."
+                  className="h-10 pl-9"
+                />
+              </div>
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <SelectTrigger className="h-10 w-full sm:w-48">
+                  <SelectValue placeholder="All statuses" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All statuses</SelectItem>
+                  {statusOptions.map((s) => (
+                    <SelectItem key={s} value={s}>{s}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={sortBy} onValueChange={setSortBy}>
+                <SelectTrigger className="h-10 w-full sm:w-56">
+                  <ArrowUpDown className="mr-2 h-3.5 w-3.5 text-[#8A8A86]" />
+                  <SelectValue placeholder="Sort" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="eventDate_asc">Event Date — soonest first</SelectItem>
+                  <SelectItem value="eventDate_desc">Event Date — latest first</SelectItem>
+                  <SelectItem value="created_desc">Lead Created — newest first</SelectItem>
+                  <SelectItem value="created_asc">Lead Created — oldest first</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* EVENT DATE FILTER */}
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <span className="flex items-center gap-1.5 text-xs font-semibold text-[#8A8A86]">
+                <Calendar className="h-3.5 w-3.5" />
+                Event Date
+              </span>
+              {[
+                { key: "all", label: "Any time" },
+                { key: "this_week", label: "This week" },
+                { key: "this_month", label: "This month" },
+                { key: "next_month", label: "Next month" },
+                { key: "custom", label: "Custom range" },
+              ].map((opt) => (
+                <button
+                  key={opt.key}
+                  onClick={() => setEventDatePreset(opt.key)}
+                  className={`rounded-full border px-3 py-1 text-xs font-semibold transition ${
+                    eventDatePreset === opt.key
+                      ? "border-[#9e5a3c] bg-[#9e5a3c]/10 text-[#9e5a3c]"
+                      : "border-[#DADAD6] bg-white text-[#555552] hover:border-[#BEBEB8]"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+              {eventDatePreset === "custom" && (
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="date"
+                    value={customStart}
+                    onChange={(e) => setCustomStart(e.target.value)}
+                    className="h-8 w-36 text-xs"
+                  />
+                  <span className="text-xs text-[#8A8A86]">to</span>
+                  <Input
+                    type="date"
+                    value={customEnd}
+                    onChange={(e) => setCustomEnd(e.target.value)}
+                    className="h-8 w-36 text-xs"
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* LEAD CREATED DATE FILTER */}
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <span className="text-xs font-semibold text-[#8A8A86]">Lead Created</span>
+              <Input
+                type="date"
+                value={createdStart}
+                onChange={(e) => setCreatedStart(e.target.value)}
+                className="h-8 w-36 text-xs"
+              />
+              <span className="text-xs text-[#8A8A86]">to</span>
+              <Input
+                type="date"
+                value={createdEnd}
+                onChange={(e) => setCreatedEnd(e.target.value)}
+                className="h-8 w-36 text-xs"
+              />
+              {(createdStart || createdEnd) && (
+                <button
+                  onClick={() => { setCreatedStart(""); setCreatedEnd(""); }}
+                  className="text-xs text-[#9e5a3c] hover:underline"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+
+            {/* SERVICE CATEGORY FILTER */}
+            <div className="mb-4 flex flex-wrap items-center gap-2">
+              <span className="text-xs font-semibold text-[#8A8A86]">Services</span>
+              {SERVICE_CATEGORIES.map((cat) => (
+                <button
+                  key={cat}
+                  onClick={() => toggleService(cat)}
+                  className={`rounded-full border px-3 py-1 text-xs font-semibold transition ${
+                    serviceFilter.has(cat)
+                      ? "border-[#9e5a3c] bg-[#9e5a3c]/10 text-[#9e5a3c]"
+                      : "border-[#DADAD6] bg-white text-[#555552] hover:border-[#BEBEB8]"
+                  }`}
+                >
+                  {cat.length > 28 ? cat.slice(0, 26) + "…" : cat}
+                </button>
+              ))}
+            </div>
+
+            {activeFilterCount > 0 && (
+              <div className="mb-4">
+                <button
+                  onClick={clearFilters}
+                  className="inline-flex items-center gap-1 text-xs font-semibold text-[#9e5a3c] hover:underline"
+                >
+                  <X className="h-3 w-3" />
+                  Clear {activeFilterCount} filter{activeFilterCount === 1 ? "" : "s"}
+                </button>
+              </div>
+            )}
+
+            <p className="mb-3 text-xs text-[#8A8A86]">
+              {filteredGroups.length} event{filteredGroups.length === 1 ? "" : "s"}
+              {" "}({leads.length} total submission{leads.length === 1 ? "" : "s"})
+              {isFetching && " · refreshing..."}
+            </p>
+
+            <div className="overflow-hidden rounded-xl border border-[#E1E1DD]">
+              <table className="w-full text-sm">
+                <thead className="bg-[#F7F7F5] text-left text-xs font-semibold uppercase tracking-wide text-[#8A8A86]">
+                  <tr>
+                    <th className="w-8 px-3 py-3"></th>
+                    <th className="px-3 py-3">Host / Venue</th>
+                    <th className="px-3 py-3">Event Date</th>
+                    <th className="px-3 py-3">Guests</th>
+                    <th className="px-3 py-3">Status</th>
+                    <th className="px-3 py-3">Submissions</th>
+                    <th className="px-3 py-3"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredGroups.map((g) => {
+                    const f = g.latest.fields || {};
+                    const isOpen = expanded.has(g.token);
+                    const statusLabel = labelOf(f.leadStatus) || "—";
+
+                    return (
+                      <React.Fragment key={g.token}>
+                        <tr className="border-t border-[#E7E7E3] hover:bg-[#F7F7F5]">
+                          <td className="px-3 py-3 text-[#8A8A86]">
+                            {g.items.length > 1 ? (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleExpand(g.token);
+                                }}
+                              >
+                                {isOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                              </button>
+                            ) : null}
+                          </td>
+                          <td className="px-3 py-3">
+                            <p className="font-semibold text-[#171717]">{f.hostName || "—"}</p>
+                            <p className="text-xs text-[#777773]">{f.eventLocation || "No venue"}</p>
+                          </td>
+                          <td className="px-3 py-3 text-[#171717]">{f.eventDate || "—"}</td>
+                          <td className="px-3 py-3 text-[#171717]">
+                            <span className="inline-flex items-center gap-1">
+                              <Users className="h-3.5 w-3.5 text-[#8A8A86]" />
+                              {f.totalGuests ?? "—"}
+                            </span>
+                          </td>
+                          <td className="px-3 py-3">
+                            <StatusBadge value={statusLabel} tone={toneForLeadStatus(statusLabel)} />
+                          </td>
+                          <td className="px-3 py-3 text-[#777773]">
+                            {g.items.length} submission{g.items.length === 1 ? "" : "s"}
+                          </td>
+                          <td className="px-3 py-3 text-right">
+                            <OpenLeadButton
+                              leadRecordId={f.leadRecordId}
+                              navigationSetting={leadRecordNavigation}
+                            />
+                          </td>
+                        </tr>
+
+                        {isOpen && g.items.map((item) => {
+                          const itemStatus = labelOf(item.fields?.leadStatus) || "—";
+                          return (
+                            <tr
+                              key={item.id}
+                              className="border-t border-[#EEEEEB] bg-[#FBFBFA] text-xs hover:bg-[#F5F3F0]"
+                            >
+                              <td></td>
+                              <td className="px-3 py-2 text-[#777773]">
+                                {safeArray(item.fields?.services).map((s) => labelOf(s)).join(", ") || "—"}
+                              </td>
+                              <td className="px-3 py-2 text-[#777773]" colSpan={2}>
+                                {item.fields?.contactEmail} · {item.fields?.contactPhone}
+                              </td>
+                              <td className="px-3 py-2">
+                                <StatusBadge value={itemStatus} tone={toneForLeadStatus(itemStatus)} />
+                              </td>
+                              <td className="px-3 py-2 text-[#8A8A86]">
+                                {item.createdTime ? new Date(item.createdTime).toLocaleDateString() : "—"}
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                <OpenLeadButton
+                                  leadRecordId={item.fields?.leadRecordId}
+                                  navigationSetting={leadRecordNavigation}
+                                  size="sm"
+                                />
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </React.Fragment>
+                    );
+                  })}
+
+                  {filteredGroups.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="px-3 py-10 text-center text-[#8A8A86]">
+                        No leads match this filter.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </div>
