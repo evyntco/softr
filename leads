@@ -1,0 +1,481 @@
+import React, { useMemo, useState } from "react";
+
+import { datasource, q, useRecords } from "@/lib/datasource";
+
+const ds = datasource.define({
+  leadForm: "a340adc6-d007-426c-af60-0a8b7e5121f9",
+  beverageConfig: "04e4128b-84cc-4542-b9fa-7e146c839748",
+});
+
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+
+import {
+  ChevronDown,
+  ChevronRight,
+  Loader2,
+  Search,
+  Users,
+  Calendar,
+} from "lucide-react";
+
+/* =========================================================
+   FIELD SELECTS — Beverage Configuration
+========================================================= */
+
+const serviceFields = q.select({
+  hostName: "Event Host Name",
+  contactEmail: "Contact Email",
+  contactPhone: "Contact Phone",
+  eventLocation: "Event Location",
+  eventDate: "Event Date",
+  eventType: "Event Type",
+  servicePackage: "Service Package",
+  bookingStatus: "Booking Status",
+  eventReservationId: "Event Reservation ID",
+  serviceId: "Service ID",
+  totalGuestCount: "Total Guest Count",
+});
+
+const eventFields = q.select({
+  eventReservationId: "Event Reservation ID",
+  serviceId: "Service ID",
+  eventDate: "Event Date",
+  eventStatus: "Event Status",
+  eventType: "Event Type",
+  totalGuestCount: "Total Guest Count",
+  hostName: "Event Host Name",
+  contactEmail: "Contact Email",
+  contactPhone: "Contact Phone",
+  vendorCategory: "Vendor Category",
+  accountAssigned: "Account Assigned to",
+  payment: "Payment",
+});
+
+/* =========================================================
+   SMALL COMPONENTS
+========================================================= */
+
+function StatusBadge({ value, tone = "default" }) {
+  const toneClasses = {
+    default: "border-[#DADAD6] bg-[#F7F7F5] text-[#555552]",
+    new: "border-[#9e5a3c]/30 bg-[#9e5a3c]/10 text-[#9e5a3c]",
+    warn: "border-amber-200 bg-amber-50 text-amber-800",
+    good: "border-green-200 bg-green-50 text-green-800",
+    danger: "border-red-200 bg-red-50 text-red-700",
+  };
+  return (
+    <span
+      className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold ${toneClasses[tone] || toneClasses.default}`}
+    >
+      {value || "—"}
+    </span>
+  );
+}
+
+function toneForBookingStatus(status) {
+  const s = (status || "").toLowerCase();
+  if (s.includes("new")) return "new";
+  if (s.includes("deposit") || s.includes("booked")) return "good";
+  if (s.includes("lost") || s.includes("cancel")) return "danger";
+  return "default";
+}
+
+function toneForEventStatus(status) {
+  const s = (status || "").toLowerCase();
+  if (s.includes("booked")) return "good";
+  if (s.includes("cancel")) return "danger";
+  if (s.includes("archiv")) return "default";
+  return "warn";
+}
+
+function safeArray(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  return [value];
+}
+
+/* =========================================================
+   SERVICES TAB — grouped by Event Reservation ID
+========================================================= */
+
+function ServicesTab() {
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [expanded, setExpanded] = useState(new Set());
+
+  const { data, status, isFetching } = useRecords({
+    from: ds.beverageConfig,
+    select: serviceFields,
+    count: 200,
+  });
+
+  const records = useMemo(() => {
+    return data?.pages?.flatMap((page) => page.items) || [];
+  }, [data]);
+
+  const groups = useMemo(() => {
+    const map = new Map();
+    for (const rec of records) {
+      const token = rec.fields?.eventReservationId || `untokened-${rec.id}`;
+      if (!map.has(token)) map.set(token, []);
+      map.get(token).push(rec);
+    }
+    return Array.from(map.entries()).map(([token, items]) => {
+      const sorted = [...items].sort(
+        (a, b) => new Date(b.createdTime || 0) - new Date(a.createdTime || 0)
+      );
+      return { token, items: sorted, latest: sorted[0] };
+    });
+  }, [records]);
+
+  const filteredGroups = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    return groups.filter((g) => {
+      const f = g.latest.fields || {};
+      const matchesSearch =
+        !term ||
+        (f.hostName || "").toLowerCase().includes(term) ||
+        (f.eventLocation || "").toLowerCase().includes(term) ||
+        (f.contactEmail || "").toLowerCase().includes(term);
+      const bookingLabel = f.bookingStatus?.label || f.bookingStatus || "";
+      const matchesStatus =
+        statusFilter === "all" ||
+        bookingLabel.toLowerCase() === statusFilter.toLowerCase();
+      return matchesSearch && matchesStatus;
+    });
+  }, [groups, search, statusFilter]);
+
+  function toggleExpand(token) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(token)) next.delete(token);
+      else next.add(token);
+      return next;
+    });
+  }
+
+  const statusOptions = useMemo(() => {
+    const set = new Set();
+    records.forEach((r) => {
+      const val = r.fields?.bookingStatus?.label || r.fields?.bookingStatus;
+      if (val) set.add(val);
+    });
+    return Array.from(set);
+  }, [records]);
+
+  if (status === "pending") {
+    return (
+      <div className="flex items-center justify-center gap-2 py-16 text-[#777773]">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Loading services...
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+        <div className="relative flex-1">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8A86]" />
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search host, venue, or email..."
+            className="h-10 pl-9"
+          />
+        </div>
+        <Select value={statusFilter} onValueChange={setStatusFilter}>
+          <SelectTrigger className="h-10 w-full sm:w-56">
+            <SelectValue placeholder="All statuses" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All statuses</SelectItem>
+            {statusOptions.map((s) => (
+              <SelectItem key={s} value={s}>{s}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <p className="mb-3 text-xs text-[#8A8A86]">
+        {filteredGroups.length} event{filteredGroups.length === 1 ? "" : "s"}
+        {" "}({records.length} total service{records.length === 1 ? "" : "s"})
+        {isFetching && " · refreshing..."}
+      </p>
+
+      <div className="overflow-hidden rounded-xl border border-[#E1E1DD]">
+        <table className="w-full text-sm">
+          <thead className="bg-[#F7F7F5] text-left text-xs font-semibold uppercase tracking-wide text-[#8A8A86]">
+            <tr>
+              <th className="w-8 px-3 py-3"></th>
+              <th className="px-3 py-3">Host / Venue</th>
+              <th className="px-3 py-3">Event Date</th>
+              <th className="px-3 py-3">Guests</th>
+              <th className="px-3 py-3">Status</th>
+              <th className="px-3 py-3">Services</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredGroups.map((g) => {
+              const f = g.latest.fields || {};
+              const isOpen = expanded.has(g.token);
+              const bookingLabel = f.bookingStatus?.label || f.bookingStatus || "—";
+              return (
+                <React.Fragment key={g.token}>
+                  <tr
+                    className="cursor-pointer border-t border-[#E7E7E3] hover:bg-[#F7F7F5]"
+                    onClick={() => toggleExpand(g.token)}
+                  >
+                    <td className="px-3 py-3 text-[#8A8A86]">
+                      {g.items.length > 1 ? (
+                        isOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />
+                      ) : null}
+                    </td>
+                    <td className="px-3 py-3">
+                      <p className="font-semibold text-[#171717]">{f.hostName || "—"}</p>
+                      <p className="text-xs text-[#777773]">{f.eventLocation || "No venue"}</p>
+                    </td>
+                    <td className="px-3 py-3 text-[#171717]">{f.eventDate || "—"}</td>
+                    <td className="px-3 py-3 text-[#171717]">
+                      <span className="inline-flex items-center gap-1">
+                        <Users className="h-3.5 w-3.5 text-[#8A8A86]" />
+                        {f.totalGuestCount ?? "—"}
+                      </span>
+                    </td>
+                    <td className="px-3 py-3">
+                      <StatusBadge value={bookingLabel} tone={toneForBookingStatus(bookingLabel)} />
+                    </td>
+                    <td className="px-3 py-3 text-[#777773]">
+                      {g.items.length} service{g.items.length === 1 ? "" : "s"}
+                    </td>
+                  </tr>
+
+                  {isOpen && g.items.map((item) => {
+                    const itemBookingLabel = item.fields?.bookingStatus?.label || item.fields?.bookingStatus || "—";
+                    const pkg = item.fields?.servicePackage;
+                    const pkgLabels = pkg ? safeArray(pkg).map((x) => typeof x === "object" ? x.label : x).join(", ") : "—";
+                    return (
+                      <tr key={item.id} className="border-t border-[#EEEEEB] bg-[#FBFBFA] text-xs">
+                        <td></td>
+                        <td className="px-3 py-2 text-[#777773]">
+                          {pkgLabels}
+                        </td>
+                        <td className="px-3 py-2 text-[#777773]" colSpan={2}>
+                          {item.fields?.contactEmail} · {item.fields?.contactPhone}
+                        </td>
+                        <td className="px-3 py-2">
+                          <StatusBadge value={itemBookingLabel} tone={toneForBookingStatus(itemBookingLabel)} />
+                        </td>
+                        <td className="px-3 py-2 text-[#8A8A86]">
+                          {item.fields?.serviceId}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </React.Fragment>
+              );
+            })}
+
+            {filteredGroups.length === 0 && (
+              <tr>
+                <td colSpan={6} className="px-3 py-10 text-center text-[#8A8A86]">
+                  No services match this filter.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================
+   EVENTS TAB — All beverage configuration records
+========================================================= */
+
+function EventsTab() {
+  const [search, setSearch] = useState("");
+
+  const { data, status, isFetching } = useRecords({
+    from: ds.beverageConfig,
+    select: eventFields,
+    count: 200,
+  });
+
+  const events = useMemo(() => {
+    return data?.pages?.flatMap((page) => page.items) || [];
+  }, [data]);
+
+  const filtered = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    if (!term) return events;
+    return events.filter((e) => {
+      const f = e.fields || {};
+      return (
+        (f.hostName || "").toLowerCase().includes(term) ||
+        (f.eventReservationId || "").toLowerCase().includes(term)
+      );
+    });
+  }, [events, search]);
+
+  if (status === "pending") {
+    return (
+      <div className="flex items-center justify-center gap-2 py-16 text-[#777773]">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Loading events...
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="mb-4">
+        <div className="relative max-w-sm">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8A8A86]" />
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by host or reservation ID..."
+            className="h-10 pl-9"
+          />
+        </div>
+      </div>
+
+      <p className="mb-3 text-xs text-[#8A8A86]">
+        {filtered.length} event{filtered.length === 1 ? "" : "s"}
+        {isFetching && " · refreshing..."}
+      </p>
+
+      <div className="overflow-hidden rounded-xl border border-[#E1E1DD]">
+        <table className="w-full text-sm">
+          <thead className="bg-[#F7F7F5] text-left text-xs font-semibold uppercase tracking-wide text-[#8A8A86]">
+            <tr>
+              <th className="px-3 py-3">Reservation</th>
+              <th className="px-3 py-3">Event Date</th>
+              <th className="px-3 py-3">Contact</th>
+              <th className="px-3 py-3">Guests</th>
+              <th className="px-3 py-3">Vendor Categories</th>
+              <th className="px-3 py-3">Status</th>
+              <th className="px-3 py-3">Payment</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((e) => {
+              const f = e.fields || {};
+              const categories = safeArray(f.vendorCategory);
+              const eventStatusLabel = f.eventStatus?.label || f.eventStatus || "—";
+              const paymentLabel = f.payment?.label || f.payment || "—";
+              const paymentTone = paymentLabel.toLowerCase().includes("paid") && !paymentLabel.toLowerCase().includes("unpaid") ? "good" : paymentLabel.toLowerCase().includes("unpaid") ? "danger" : "warn";
+              return (
+                <tr key={e.id} className="border-t border-[#E7E7E3] hover:bg-[#F7F7F5]">
+                  <td className="px-3 py-3">
+                    <p className="font-semibold text-[#171717]">{f.eventReservationId || "—"}</p>
+                    <p className="text-xs text-[#8A8A86]">Service #{f.serviceId}</p>
+                  </td>
+                  <td className="px-3 py-3 text-[#171717]">
+                    <span className="inline-flex items-center gap-1">
+                      <Calendar className="h-3.5 w-3.5 text-[#8A8A86]" />
+                      {f.eventDate || "—"}
+                    </span>
+                  </td>
+                  <td className="px-3 py-3">
+                    <p className="text-[#171717]">{f.hostName || "—"}</p>
+                    <p className="text-xs text-[#777773]">{f.contactEmail}</p>
+                  </td>
+                  <td className="px-3 py-3 text-[#171717]">{f.totalGuestCount ?? "—"}</td>
+                  <td className="px-3 py-3">
+                    <div className="flex flex-wrap gap-1">
+                      {categories.length === 0 && <span className="text-[#8A8A86]">—</span>}
+                      {categories.map((c) => {
+                        const catLabel = typeof c === "object" ? c.label : c;
+                        return <StatusBadge key={catLabel} value={catLabel} />;
+                      })}
+                    </div>
+                  </td>
+                  <td className="px-3 py-3">
+                    <StatusBadge value={eventStatusLabel} tone={toneForEventStatus(eventStatusLabel)} />
+                  </td>
+                  <td className="px-3 py-3">
+                    <StatusBadge value={paymentLabel} tone={paymentTone} />
+                  </td>
+                </tr>
+              );
+            })}
+
+            {filtered.length === 0 && (
+              <tr>
+                <td colSpan={7} className="px-3 py-10 text-center text-[#8A8A86]">
+                  No events match this search.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================
+   MAIN
+========================================================= */
+
+export default function Block() {
+  const [tab, setTab] = useState("services");
+
+  return (
+    <div className="bg-[#F7F7F5] py-6 sm:py-10">
+      <div className="container">
+        <div className="content mx-auto max-w-6xl">
+          <section className="mb-6 overflow-hidden rounded-2xl border border-[#E1E1DD] bg-white">
+            <div className="px-6 py-8 sm:px-10">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[#8A8A86]">
+                CRUE / Evynt — Internal
+              </p>
+              <h1 className="mt-2 text-3xl font-medium tracking-[-0.03em] text-[#111111]">
+                Beverage Service Management
+              </h1>
+              <p className="mt-2 text-sm leading-6 text-[#777773]">
+                Services shows all beverage configurations grouped by event reservation.
+                Events shows every record with vendor categories, payment status, and event details.
+              </p>
+            </div>
+
+            <div className="flex border-t border-[#E7E7E3] px-6 sm:px-10">
+              {[
+                { key: "services", label: "Services" },
+                { key: "events", label: "Events" },
+              ].map((t) => (
+                <button
+                  key={t.key}
+                  onClick={() => setTab(t.key)}
+                  className={`border-b-2 px-4 py-3 text-sm font-semibold transition ${
+                    tab === t.key
+                      ? "border-[#9e5a3c] text-[#9e5a3c]"
+                      : "border-transparent text-[#8A8A86] hover:text-[#171717]"
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <section className="overflow-hidden rounded-2xl border border-[#E1E1DD] bg-white p-6 sm:p-8">
+            {tab === "services" ? <ServicesTab /> : <EventsTab />}
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+}
