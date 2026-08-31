@@ -1,0 +1,181 @@
+import { useMemo } from "react";
+
+import { datasource, q, useRecords } from "@/lib/datasource";
+import { useNavigationSetting } from "@/lib/editable-settings";
+import { NavigationAction } from "@/components/navigation-action";
+
+import {
+  ArrowLeft,
+  Calendar,
+  Loader2,
+  Mail,
+  MapPin,
+  Phone,
+  Users,
+} from "lucide-react";
+
+/* =========================================================
+   DATA SOURCE
+
+   Same Lead Form connection the leads list page reads from.
+   "Lead Record ID" is a plain field on the record (not the
+   underlying Softr row id), so it has to be looked up with a
+   `where` filter rather than useRecord(recordId).
+========================================================= */
+
+const ds = datasource.define({
+  leadForm: "a340adc6-d007-426c-af60-0a8b7e5121f9",
+});
+
+const leadFields = q.select({
+  hostName: "Event Host Name",
+  contactEmail: "Contact Email",
+  contactPhone: "Contact Phone",
+  eventLocation: "Event Location",
+  eventDate: "Event Date",
+  eventType: "Event Type",
+  services: "Services you are considering that we provide",
+  leadStatus: "Lead Status",
+  workspaceToken: "Workspace Token",
+  leadRecordId: "Lead Record ID",
+  totalGuests: "Estimated Total Guest Count",
+});
+
+/* =========================================================
+   HELPERS
+========================================================= */
+
+function getLeadRecordIdFromUrl() {
+  if (typeof window === "undefined") return "";
+  const params = new URLSearchParams(window.location.search);
+  return (params.get("leadRecordId") || "").trim();
+}
+
+function labelOf(value) {
+  return typeof value === "object" && value ? value.label ?? "" : value ?? "";
+}
+
+function safeArray(value) {
+  if (!value) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
+/* =========================================================
+   SMALL UI
+========================================================= */
+
+function Field({ icon: Icon, label, value }) {
+  return (
+    <div className="flex items-start gap-3">
+      {Icon && <Icon className="mt-0.5 h-4 w-4 shrink-0 text-[#8A8A86]" />}
+      <div>
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-[#8A8A86]">
+          {label}
+        </p>
+        <p className="text-sm text-[#171717]">{value || "—"}</p>
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================
+   MAIN
+========================================================= */
+
+export default function Block() {
+  const leadRecordId = getLeadRecordIdFromUrl();
+
+  const backNavigation = useNavigationSetting({
+    name: "leads-list-page",
+    label: "Back to Leads Page",
+    initialValue: {
+      action: "OPEN_PAGE",
+      destination: "/leads",
+      openIn: "SELF",
+    },
+  });
+
+  const { data, status } = useRecords({
+    from: ds.leadForm,
+    select: leadFields,
+    where: leadRecordId
+      ? q.text("leadRecordId").is(leadRecordId)
+      : q.text("leadRecordId").is("__NO_LEAD_RECORD_ID__"),
+    count: 1,
+  });
+
+  const lead = useMemo(() => {
+    return data?.pages?.flatMap((page) => page.items)?.[0] || null;
+  }, [data]);
+
+  const f = lead?.fields || {};
+
+  return (
+    <div className="bg-[#F7F7F5] py-6 sm:py-10">
+      <div className="container">
+        <div className="content mx-auto max-w-3xl">
+          <NavigationAction navigation={backNavigation}>
+            <button
+              type="button"
+              className="mb-4 inline-flex items-center gap-1.5 text-sm font-semibold text-[#555552] hover:text-[#171717]"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Back to Leads
+            </button>
+          </NavigationAction>
+
+          <section className="overflow-hidden rounded-2xl border border-[#E1E1DD] bg-white p-6 sm:p-8">
+            {!leadRecordId && (
+              <p className="py-10 text-center text-sm text-[#8A8A86]">
+                No lead record specified.
+              </p>
+            )}
+
+            {leadRecordId && status === "pending" && (
+              <div className="flex items-center justify-center gap-2 py-16 text-[#777773]">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading lead...
+              </div>
+            )}
+
+            {leadRecordId && status !== "pending" && !lead && (
+              <p className="py-10 text-center text-sm text-[#8A8A86]">
+                No lead found for this record ID.
+              </p>
+            )}
+
+            {lead && (
+              <>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[#8A8A86]">
+                  Lead Record
+                </p>
+                <h1 className="mt-2 text-2xl font-medium tracking-[-0.03em] text-[#111111]">
+                  {f.hostName || "Untitled Lead"}
+                </h1>
+
+                <div className="mt-6 grid grid-cols-1 gap-5 sm:grid-cols-2">
+                  <Field icon={Mail} label="Contact Email" value={f.contactEmail} />
+                  <Field icon={Phone} label="Contact Phone" value={f.contactPhone} />
+                  <Field icon={MapPin} label="Event Location" value={f.eventLocation} />
+                  <Field icon={Calendar} label="Event Date" value={f.eventDate} />
+                  <Field label="Event Type" value={labelOf(f.eventType)} />
+                  <Field icon={Users} label="Estimated Total Guests" value={f.totalGuests} />
+                  <Field label="Lead Status" value={labelOf(f.leadStatus)} />
+                </div>
+
+                <div className="mt-6">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-[#8A8A86]">
+                    Services Considered
+                  </p>
+                  <p className="mt-1 text-sm text-[#171717]">
+                    {safeArray(f.services).map((s) => labelOf(s)).join(", ") || "—"}
+                  </p>
+                </div>
+              </>
+            )}
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+}
