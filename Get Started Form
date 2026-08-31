@@ -102,6 +102,13 @@ const venueSelect = q.select({
 
 /* =========================================================
    FALLBACK OPTIONS
+
+   These only render if the live useFieldOptions() fetch for the
+   matching Notion field comes back empty (e.g. a slow load or a
+   transient error) — the form always prefers what's actually
+   configured in the Lead Form database first. Keep these synced
+   to Notion's real option lists so a fallback never shows a
+   customer a choice the database wouldn't accept.
 ========================================================= */
 
 const FALLBACK_EVENT_TYPES = [
@@ -115,13 +122,13 @@ const FALLBACK_EVENT_TYPES = [
   "Other",
 ];
 
+// Synced to the live "Services you are considering that we
+// provide" options in the Cheers & Swizzles Lead Form database.
 const FALLBACK_SERVICES = [
   "Bartender Service for Alcoholic or Non-Alcoholic Drinks",
-  "Open Bar Mixers",
-  "Soda Only Add On",
-  "Dirty Soda Bar",
-  "Mocktail Add On",
-  "Not Sure Yet",
+  "Mixers with Supplies",
+  "Non-Alcoholic Drinks with Supplies",
+  "Others (Champagne Toast/Table and Linens/Table Side Service/Etc)",
 ];
 
 const FALLBACK_CONTACT_METHODS = [
@@ -250,22 +257,68 @@ const DEFAULT_BAR_SERVICE_MINUTES = 4 * 60;
 /* =========================================================
    PERSISTENT EVENT IDS
 
-   These IDs are created BEFORE the database record exists.
-   That means the form never has to depend on Softr returning
-   its internal datasource record.id after creation.
+   Lead Record ID identifies THIS submission and is always
+   random — every lead is its own record, no matter what.
+
+   Workspace Token is deliberately NOT random. It's derived from
+   the entry's own fingerprint — venue + event date — so that if
+   this same real-world event is ever entered again (a duplicate
+   submission, or eventually a second vendor's own lead form using
+   the same generation logic), it converges on the same token
+   instead of minting a second, disconnected workspace for one
+   booking. Venue + Event Date is the match key on purpose — host
+   name gets typed differently depending on who fills out which
+   form (bride vs. planner vs. maid-of-honor), so it's left out of
+   the hash rather than trusted to match exactly.
+
+   Both IDs are still generated BEFORE the database write and sent
+   in the same create call — the form never depends on Softr
+   returning its internal record.id after creation.
 ========================================================= */
 
-function generateWorkspaceToken() {
-  if (
-    typeof crypto !== "undefined" &&
-    typeof crypto.randomUUID === "function"
-  ) {
-    return `workspace-${crypto.randomUUID()}`;
+function normalizeForToken(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+// Small deterministic string hash (FNV-1a variant). Not
+// cryptographic — it only needs to be stable and collision-
+// resistant enough for a venue+date fingerprint, and short
+// enough to be readable as a Notion field value.
+function hashFingerprint(input) {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+/*
+ * Prefer the actual Venue List record id when a real venue was
+ * matched (selectedVenue.id) — it's a stable, canonical key, more
+ * reliable than a name. Falls back to normalized free text only
+ * when the venue was entered manually and never matched a real
+ * Venue List record.
+ */
+function generateWorkspaceToken({ venueId, venueName, eventDate }) {
+  const venueKey = venueId
+    ? `v:${venueId}`
+    : `n:${normalizeForToken(venueName)}`;
+  const dateKey = normalizeForToken(eventDate);
+
+  if (!dateKey) {
+    // Defensive only — validateStepOne() requires an event date
+    // before submit is reachable, so this path shouldn't run.
+    return `workspace-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 10)}`;
   }
 
-  return `workspace-${Date.now()}-${Math.random()
-    .toString(36)
-    .slice(2, 12)}`;
+  return `workspace-${hashFingerprint(`${venueKey}|${dateKey}`)}`;
 }
 
 function generateLeadRecordId() {
@@ -390,6 +443,12 @@ export default function Block() {
 
   /* =======================================================
      VENUE LOOKUP
+
+     Unchanged from the original — this already connects the real
+     Venue List record when one is matched (chooseVenue keeps
+     selectedVenue.id from the actual Venue List row). It only
+     falls back to free text when the venue isn't listed or the
+     guest enters the location manually.
   ======================================================= */
   const [venueSearch, setVenueSearch] = useState("");
   const [selectedVenue, setSelectedVenue] = useState(null);
@@ -424,6 +483,15 @@ export default function Block() {
 
   /* =======================================================
      ACTUAL OPTIONS FROM CHEERS DATABASE
+
+     Every one of these tries the live Notion field options first;
+     the FALLBACK_* constants above only render if that fetch comes
+     back empty. Event Type is a free-text field in Notion today,
+     not a select, so useFieldOptions() has nothing to return for
+     it and this will always use FALLBACK_EVENT_TYPES until that
+     field is converted to a real select on the Notion side — at
+     that point this starts pulling live options with no code
+     change needed here.
   ======================================================= */
   const { options: eventTypeFieldOptions = [] } = useFieldOptions({
     from: ds.cheersLeads,
@@ -441,6 +509,12 @@ export default function Block() {
     from: ds.cheersLeads,
     select: leadFields,
     field: "bestWayToReach",
+  });
+
+  const { options: leadStatusFieldOptions = [] } = useFieldOptions({
+    from: ds.cheersLeads,
+    select: leadFields,
+    field: "leadStatus",
   });
 
   const eventTypeChoices = useMemo(() => {
@@ -467,6 +541,21 @@ export default function Block() {
     }
     return FALLBACK_CONTACT_METHODS.map((label) => ({ id: label, label }));
   }, [contactFieldOptions]);
+
+  /*
+   * Resolve "the new-lead status option" by label instead of a hardcoded
+   * option ID — option IDs aren't stable across a Notion field being
+   * edited/recreated, but the label "New" is what a human would expect
+   * to keep working. Falls back to the first available option so a
+   * renamed status doesn't silently break lead creation.
+   */
+  const defaultLeadStatusId = useMemo(() => {
+    if (!leadStatusFieldOptions.length) return null;
+    const preferred = leadStatusFieldOptions.find((option) =>
+      /new/i.test(option.label || "")
+    );
+    return (preferred || leadStatusFieldOptions[0]).id;
+  }, [leadStatusFieldOptions]);
 
   /* =======================================================
      SEARCH VENUES BY NAME OR ADDRESS
@@ -517,6 +606,22 @@ export default function Block() {
 
   /* =======================================================
      CREATE USER WORKFLOW
+
+     DEVELOPER TASK — intentionally left un-wired in this pass.
+     The setting below is declared but never triggered; hooking it
+     up is scoped to the developer, not this fix.
+
+     What it should do: after a lead is successfully created,
+     trigger this workflow with { leadRecordId, workspaceToken } so
+     it can create the client's user account and populate
+     "User Magic Link" / "Event Page Magic Link" back onto the Lead
+     record.
+
+     When it should occur: immediately after createLead.mutateAsync()
+     resolves — see the DEVELOPER TASK comment inside handleSubmit
+     below, right where the trigger call belongs. It should fire on
+     every successful lead creation, not on a delay and not as a
+     separate manual step.
   ======================================================= */
   const createUserWorkflow = useNavigationSetting({
     name: "create-user-workflow",
@@ -528,6 +633,10 @@ export default function Block() {
 
   /* =======================================================
      VENUE VALUE TO STORE
+
+     Unchanged — still text for "Event Location" either way; the
+     relation to the matched Venue List record is carried through
+     selectedVenue (used below only for the workspace token fingerprint).
   ======================================================= */
   const eventLocation = manualVenueMode
     ? manualVenue.trim()
@@ -535,6 +644,8 @@ export default function Block() {
 
   /* =======================================================
      VENUE SELECT
+
+     Unchanged.
   ======================================================= */
   function chooseVenue(venue) {
     const nextVenue = {
@@ -585,10 +696,23 @@ export default function Block() {
     );
   }
 
-  const barCloseIsNextDay =
+  /*
+   * BAR_CLOSE_OPTIONS already knows which of its own entries wrap past
+   * midnight (built from the same 15-minute grid barCloseTime's value
+   * comes from), so look that flag up directly instead of re-deriving
+   * "next day" from a magic-number minute threshold.
+   */
+  const barCloseIsNextDay = Boolean(
+    BAR_CLOSE_OPTIONS.find((option) => option.value === barCloseTime)?.nextDay
+  );
+
+  const barCloseBeforeStartSameDay =
+    !barCloseIsNextDay &&
+    barStartTime !== "" &&
     barCloseTime !== "" &&
     timeToMinutes(barCloseTime) !== null &&
-    timeToMinutes(barCloseTime) <= 2 * 60;
+    timeToMinutes(barStartTime) !== null &&
+    timeToMinutes(barCloseTime) <= timeToMinutes(barStartTime);
 
   /* =======================================================
      PAGE VALIDATION
@@ -608,6 +732,12 @@ export default function Block() {
     }
     if (services.length === 0) {
       setError("Please select at least one service you're interested in.");
+      return false;
+    }
+    if (barCloseBeforeStartSameDay) {
+      setError(
+        "Bar close time is before the start time on the same day. If service runs past midnight, pick one of the \"(next day)\" close times."
+      );
       return false;
     }
     setError("");
@@ -724,12 +854,19 @@ export default function Block() {
       /* --------------------------------------------------
          Generate persistent IDs BEFORE creating the Lead.
 
-         Workspace Token = one event/workspace.
-         Lead Record ID  = one Lead record.
+         Workspace Token is derived from this entry's own
+         fingerprint (matched venue id, or normalized venue text,
+         plus event date) — see the generateWorkspaceToken comment
+         above for why. Lead Record ID stays random; it identifies
+         this submission specifically.
 
          Both values are saved in the FIRST database write.
       -------------------------------------------------- */
-      const workspaceToken = generateWorkspaceToken();
+      const workspaceToken = generateWorkspaceToken({
+        venueId: selectedVenue?.id || null,
+        venueName: eventLocation,
+        eventDate,
+      });
       const leadRecordId = generateLeadRecordId();
 
       const recordPayload = {
@@ -741,16 +878,34 @@ export default function Block() {
         eventLocation: eventLocation,
         eventType: eventType,
         services: services,
-        barStartTime: barStartTime ? timeToDisplay(barStartTime) : null,
-        barCloseTime: barCloseTime ? timeToDisplay(barCloseTime) : null,
+
+        /*
+         * Stored as raw 24-hour "HH:MM", matching how Beverage
+         * Configuration's own Bar Service Start/Close Time fields are
+         * written (see Final Details Record). Keeping the same raw
+         * format here means no reformatting is needed if this value
+         * ever gets copied onto a Beverage Configuration record later.
+         * timeToDisplay() is still used for the on-screen dropdown
+         * labels — just not for what gets saved.
+         */
+        barStartTime: barStartTime || null,
+        barCloseTime: barCloseTime || null,
+
         additionalServiceDetails: additionalDetails.trim() || null,
         totalGuests: totalGuests.trim() ? Number(totalGuests.trim()) : null,
         alcoholGuests: alcoholGuests.trim() ? Number(alcoholGuests.trim()) : null,
-        nonAlcoholic: nonAlcoholic.trim() || null,
-        cocktails: cocktails.trim() || null,
-        beer: beer.trim() || null,
-        wine: wine.trim() || null,
-        leadStatus: "c483bba7-48e0-4b06-b398-360dd6c924fe",
+
+        /*
+         * Numeric, matching the equivalent Beverage Configuration
+         * fields (Cocktail Drinkers, Wine Drinking Guests, etc.),
+         * which are all number fields, not text.
+         */
+        nonAlcoholic: nonAlcoholic.trim() ? Number(nonAlcoholic.trim()) : null,
+        cocktails: cocktails.trim() ? Number(cocktails.trim()) : null,
+        beer: beer.trim() ? Number(beer.trim()) : null,
+        wine: wine.trim() ? Number(wine.trim()) : null,
+
+        leadStatus: defaultLeadStatusId || undefined,
 
         // Event-level join key used by Page 3 to find all vendors.
         workspaceToken: workspaceToken,
@@ -759,11 +914,12 @@ export default function Block() {
         leadRecordId: leadRecordId,
       };
 
-      console.log("[Cheers Form] Creating Lead", {
-        workspaceToken,
-        leadRecordId,
-        payload: recordPayload,
-      });
+      /*
+       * No lead PII (name/email/phone) in these logs — this form is
+       * public-facing, and browser console output isn't a safe place
+       * for that even in a first-party dev tools session.
+       */
+      console.log("[Cheers Form] Creating Lead", { workspaceToken, leadRecordId });
 
       /* --------------------------------------------------
          SINGLE DATABASE WRITE
@@ -773,10 +929,12 @@ export default function Block() {
       -------------------------------------------------- */
       await createLead.mutateAsync(recordPayload);
 
-      console.log("[Cheers Form] Lead created successfully", {
-        workspaceToken,
-        leadRecordId,
-      });
+      console.log("[Cheers Form] Lead created successfully", { workspaceToken, leadRecordId });
+
+      // DEVELOPER TASK: trigger createUserWorkflow here with
+      // { leadRecordId, workspaceToken } once it's wired up, so the
+      // client's user account + magic link get created on every
+      // successful lead. See the CREATE USER WORKFLOW comment above.
 
       setSubmissionStep("done");
 
@@ -1139,6 +1297,12 @@ export default function Block() {
                             NEXT DAY — this close time is after midnight and falls on the calendar day after the event start time.
                           </div>
                         )}
+
+                        {barCloseBeforeStartSameDay && (
+                          <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">
+                            This close time is before the start time on the same day. Pick a "(next day)" option if service runs past midnight.
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -1227,6 +1391,7 @@ export default function Block() {
                           <Input
                             value={nonAlcoholic}
                             onChange={(event) => setNonAlcoholic(event.target.value)}
+                            inputMode="numeric"
                             placeholder="Optional"
                             className="h-12 pl-11"
                           />
@@ -1239,6 +1404,7 @@ export default function Block() {
                           <Input
                             value={cocktails}
                             onChange={(event) => setCocktails(event.target.value)}
+                            inputMode="numeric"
                             placeholder="Optional"
                             className="h-12 pl-11"
                           />
@@ -1251,6 +1417,7 @@ export default function Block() {
                           <Input
                             value={beer}
                             onChange={(event) => setBeer(event.target.value)}
+                            inputMode="numeric"
                             placeholder="Optional"
                             className="h-12 pl-11"
                           />
@@ -1263,6 +1430,7 @@ export default function Block() {
                           <Input
                             value={wine}
                             onChange={(event) => setWine(event.target.value)}
+                            inputMode="numeric"
                             placeholder="Optional"
                             className="h-12 pl-11"
                           />
